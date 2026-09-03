@@ -2,6 +2,29 @@
 #include <iostream>
 #include <vector>
 
+void judgementPointStatus(const std::vector<uchar>& status, auto& newPOints) {
+	
+	int count = 0;
+
+		for (int i = 0; i < status.size(); i++) {
+			
+			if (!status[i]) {
+				
+				count++;
+				
+				if (count > 50) {
+					pointStatus = false;
+					continue
+				}
+			}
+			else {	
+				CPoints.push_back(newPoints[i]);
+			}
+		}	
+
+	return PointStatus;
+}
+
 int main() {
 	cv::VideoCapture cap(0);
 	if (!cap.isOpened()) return -1;
@@ -35,7 +58,11 @@ int main() {
 
 		std::vector<cv::Point2f> newPoints;
 
+		std::vector<cv::Point2f> CPoints;
+
 		std::vector<uchar> status;
+
+		bool pointStatus = true;
 
 		std::vector<float> error;
 
@@ -47,20 +74,30 @@ int main() {
 				status,
 				error
 			);
+	
+		if (newPoints.size() <= 50) {
+			cv::goodFeaturesToTrack(
+					oldGray,oldPoints,
+					100,
+					0.01,
+					10
+					);
+		}	
 
-		if (!status.empty() && status[0]){
+		pointStatus = judgementPointStatus()
+
+		if (!status.empty() && pointStatus){
 			
-			for (int i = 0; i < newPoints.size(); i++) {
+			for (int i = 0; i < CPoints.size(); i++) {
 				cv::circle(
 				frame,
-				newPoints[0],
+				CPoints[i],
 				6,
 				cv::Scalar(0, 0, 255),
 				-1
 				);
 			}
 			
-			oldPoints = newPoints;
 		}
 
 		cv::imshow("camera", frame);
