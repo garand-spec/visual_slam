@@ -87,7 +87,7 @@ python3 tools/prepare_stereo_dataset.py data/recording.mp4 \
 - `--dense-min-depth M` / `--dense-max-depth M`：有效深度范围。
 - `--swap-eyes`：原始第二半幅作为 LEFT/Camera1，RERVISION 默认值。
 
-完整实机说明、性能数据和状态解释见 [README_SLAM.md](README_SLAM.md)。
+完整操作与状态说明见 [README_SLAM.md](README_SLAM.md)。架构、已有运行统计、坐标约定与待完善项见 [项目理解与进展报告](docs/视觉SLAM方案.md)。
 
 ## 每次运行的输出
 
@@ -95,12 +95,12 @@ python3 tools/prepare_stereo_dataset.py data/recording.mp4 \
 
 - `dense_map.ply`：稠密灰度点云，使用 MeshLab 或 CloudCompare 查看。
 - `map.ply`：过滤后的 ORB-SLAM3 稀疏地图点。
-- `poses.csv`：逐帧位姿和跟踪状态。
+- `poses.csv`：逐帧世界到相机变换 `Tcw`（时间单位为秒）和跟踪状态；绘制世界坐标相机轨迹前需要取逆。
 - `tracking_health.csv`：逐帧特征数、地图点、IMU 样本数和耗时。
 - `status.txt`：供状态脚本读取的最新健康信息。
-- `CameraTrajectory.txt` / `KeyFrameTrajectory.txt`：EuRoC/TUM 工具可处理的轨迹。
+- `CameraTrajectory.txt` / `KeyFrameTrajectory.txt`：ORB-SLAM3 轨迹导出，使用纳秒时间戳；接入评估工具前需确认格式、坐标系与参考地图。
 
-离线模式额外生成 `summary.txt`，记录成功跟踪比例、点数和总耗时。
+离线模式输出 `poses.csv`、稀疏地图、轨迹和 `summary.txt`，后者记录成功跟踪比例、点数和总耗时；不输出稠密地图或 `tracking_health.csv`。现有运行验收器要求实时健康文件，不能直接用于离线输出。
 
 ## 自动验收
 
@@ -158,7 +158,7 @@ IMU（可选） ─────────────────────�
 
 - 仓库自带标定仅适用于当前这套双目相机及其固定镜头相对位置。
 - IMU 外参仍是占位值；纯双目模式已具备真实尺度，正式使用 IMU 前必须完成时空联合标定。
-- 稠密模块生成点云而非带纹理三角网格；网格重建属于后处理。
+- 稠密模块生成灰度体素点云；没有回环后重新融合或地图切换隔离，不能保证全局一致性，也没有网格和纹理输出。
 - 当前 Windows 工作区可运行数据准备、校验与测试；实时相机 SDK 和 ORB-SLAM3 二进制需要在目标 Linux/Jetson 上构建和运行。
 
 编辑器索引配置位于 `.vscode/` 和 `pyrightconfig.json`。建议在 VS Code 中直接打开 `visual_slam` 目录；若打开它的上级目录，嵌套项目配置不会自动生效。Windows 本机没有 Eigen C++ 头文件时，ORB-SLAM3 的惯性类型可能仍显示单个外部依赖提示；通过 Remote SSH 打开 Jetson 项目后会使用 Conda 环境中的 Eigen 并完整解析。

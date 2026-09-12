@@ -1,0 +1,128 @@
+{
+  "report_version": "2.0",
+  "review_date": "2026-09-12",
+  "collected_at_utc": "2026-09-12T11:34:51.191854+00:00",
+  "source_commit": "0e229dedadcba0666a012fc3d5ebe94b9a1a4376",
+  "device_model": "NVIDIA Jetson AGX Thor Developer Kit",
+  "project_path": "/home/linaro/projects/visual_slam",
+  "scope": "Existing run artifacts only; no new camera capture or C++ build. Historical runs do not record their source commit or full launch arguments.",
+  "metric_definitions": {
+    "ok_states": [
+      "OK",
+      "OK_KLT"
+    ],
+    "sampled_fps": "(N-1)/(last camera timestamp-first camera timestamp); not wall-clock throughput",
+    "p95": "sorted ascending, element ceil(N*0.95)-1 (zero based)",
+    "track_ms": "duration of TrackStereo only",
+    "ply_vertices": "declared vertex count in PLY header"
+  },
+  "verification": {
+    "unittest": {
+      "total": 5,
+      "passed": 5
+    },
+    "validate_project_latest": {
+      "total": 27,
+      "passed": 27
+    },
+    "new_camera_capture": false,
+    "fresh_cpp_build": false,
+    "ground_truth_accuracy_evaluation": false
+  },
+  "runs": [
+    {
+      "run": "run_20260831_151502",
+      "frames": 1191,
+      "ok_frames": 857,
+      "ok_ratio": 0.7195633921074727,
+      "mean_track_ms": 19.72578337531486,
+      "median_track_ms": 18.617,
+      "p95_track_ms": 31.748,
+      "max_track_ms": 50.744,
+      "camera_timestamp_span_s": 40.916995999999926,
+      "sampled_fps": 29.083268967252682,
+      "timestamp_nonincreasing": 0,
+      "imu_samples_total": 0,
+      "max_consecutive_lost": 92,
+      "artifacts": {
+        "poses.csv": {
+          "size_bytes": 125615,
+          "sha256": "c9594f9b32e52582f27cc733cbe9c6f1819e532777f31702fa7863ca524a5cdb"
+        },
+        "tracking_health.csv": {
+          "size_bytes": 64660,
+          "sha256": "00a37b3cdd54cd4f38f8feee3ce384bbb7d3343e6d6cb01b79b0bbeb335711aa"
+        },
+        "status.txt": {
+          "size_bytes": 164,
+          "sha256": "91226f54259900c9d20b6f6bc475390ce09f98a96ee31ec647f0e45328f6db36"
+        },
+        "map.ply": {
+          "size_bytes": 777,
+          "sha256": "25651daf7d2a8ced146a97fef38c3b154654c89eb8c5521b7f7bcf2b62a5312c",
+          "declared_vertices": 16
+        },
+        "dense_map.ply": {
+          "size_bytes": 17437888,
+          "sha256": "b460939cf04ecb3d097c37db6da0ee3215b3b32f9a0fc1b843c71bcf53dc0a61",
+          "declared_vertices": 483139
+        },
+        "CameraTrajectory.txt": {
+          "size_bytes": 91622,
+          "sha256": "abee53d690d2d495456b9465a71771e4d9b0e0b02aed948da3daf4f6add6d043"
+        },
+        "KeyFrameTrajectory.txt": {
+          "size_bytes": 6568,
+          "sha256": "4e3e2dd7bbbc27489a5802c6b5eeb329a741f312e5371d52cb4badbea0f9cf18"
+        }
+      }
+    },
+    {
+      "run": "run_20260912_192042",
+      "frames": 660,
+      "ok_frames": 660,
+      "ok_ratio": 1.0,
+      "mean_track_ms": 43.96423333333333,
+      "median_track_ms": 41.45,
+      "p95_track_ms": 63.506,
+      "max_track_ms": 69.02,
+      "camera_timestamp_span_s": 30.026857000000064,
+      "sampled_fps": 21.947018963722996,
+      "timestamp_nonincreasing": 0,
+      "imu_samples_total": 0,
+      "max_consecutive_lost": 0,
+      "artifacts": {
+        "poses.csv": {
+          "size_bytes": 92756,
+          "sha256": "a11cb12d534a790e20c81911fd4c3220f89f5f09393a5f054edb451f01f4fd4d"
+        },
+        "tracking_health.csv": {
+          "size_bytes": 33588,
+          "sha256": "d97e82f466c28d9889c71b3b0e14e370901e5298a79f2d271a5368d42014b542"
+        },
+        "status.txt": {
+          "size_bytes": 154,
+          "sha256": "356fdc4677cda77cd3eeacf625bfb322cffe18fa3bf0ec75cee3b6b5081a8aad"
+        },
+        "map.ply": {
+          "size_bytes": 16610,
+          "sha256": "d7ea72304d6c7893f8378009c1841fe6c567b8c15b7a8c2c2f945ae56749fc36",
+          "declared_vertices": 432
+        },
+        "dense_map.ply": {
+          "size_bytes": 13560412,
+          "sha256": "a4775bd3e89e564ab650bbcb33214232308f01d34aac9b959a0f39524de15c65",
+          "declared_vertices": 367276
+        },
+        "CameraTrajectory.txt": {
+          "size_bytes": 70425,
+          "sha256": "252d3b5c1b8f7de58fc27ef78b6824d93d7005bbbb8e3fb590f5a11638b322e6"
+        },
+        "KeyFrameTrajectory.txt": {
+          "size_bytes": 1488,
+          "sha256": "9fef1d360e8f0952f73e4ed3cd61eaef8de4cedcf682b1d1015e4d4524fa19a4"
+        }
+      }
+    }
+  ]
+}
