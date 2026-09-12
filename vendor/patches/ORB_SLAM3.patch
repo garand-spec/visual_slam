@@ -153,8 +153,37 @@ index bb7aace..0975455 100644
  
  #endif
 -
+diff --git a/include/StereoInitGate.h b/include/StereoInitGate.h
+new file mode 100644
+index 0000000..625c621
+--- /dev/null
++++ b/include/StereoInitGate.h
+@@ -0,0 +1,23 @@
++#pragma once
++#include <algorithm>
++#include <cmath>
++
++namespace ORB_SLAM3 {
++// Feature count alone does not establish stereo depth or a usable map.
++template<class FrameType>
++int CountValidStereoSeeds(const FrameType& frame) {
++    int count = 0;
++    if (frame.Nleft >= 0) {
++        const int limit = std::min<int>(frame.Nleft, frame.mvLeftToRightMatch.size());
++        for (int i = 0; i < limit; ++i)
++            if (frame.mvLeftToRightMatch[i] >= 0 &&
++                i < static_cast<int>(frame.mvStereo3Dpoints.size()) &&
++                frame.mvStereo3Dpoints[i].allFinite() && frame.mvStereo3Dpoints[i].z() > 0)
++                ++count;
++    } else {
++        for (float depth : frame.mvDepth)
++            if (std::isfinite(depth) && depth > 0) ++count;
++    }
++    return count;
++}
++}
 diff --git a/include/System.h b/include/System.h
-index 872c86e..128e33e 100644
+index 872c86e..d190514 100644
 --- a/include/System.h
 +++ b/include/System.h
 @@ -175,6 +175,8 @@ public:
@@ -166,7 +195,7 @@ index 872c86e..128e33e 100644
      std::vector<cv::KeyPoint> GetTrackedKeyPointsUn();
  
      // For debugging
-@@ -186,6 +188,24 @@ public:
+@@ -186,6 +188,27 @@ public:
  
      float GetImageScale();
  
@@ -187,11 +216,14 @@ index 872c86e..128e33e 100644
 +    bool GetLastFrameRelativePose(Sophus::SE3f& Tcr, long unsigned int& ref_kf_id);
 +    // All maps in the atlas (needed to reconstruct final keyframe poses).
 +    std::vector<Map*> GetAllMaps();
++    // Call after Shutdown(): final camera poses in each Atlas map, no origin shift.
++    // Consumers must cross-check online tracking validity before integration.
++    void SaveOptimizedFramePoses(const std::string& filename);
 +
  #ifdef REGISTER_TIMES
      void InsertRectTime(double& time);
      void InsertResizeTime(double& time);
-@@ -262,6 +282,10 @@ private:
+@@ -262,6 +285,10 @@ private:
      string mStrVocabularyFilePath;
  
      Settings* settings_;
@@ -219,7 +251,7 @@ index 863c98e..3668459 100644
      //std::mutex mMutexTracks;
  
 diff --git a/src/Atlas.cc b/src/Atlas.cc
-index 7bdea06..3c9511e 100644
+index 7bdea06..6554cb6 100644
 --- a/src/Atlas.cc
 +++ b/src/Atlas.cc
 @@ -74,6 +74,7 @@ void Atlas::CreateNewMap()
@@ -244,6 +276,22 @@ index 7bdea06..3c9511e 100644
  }
  
  unsigned long int Atlas::GetLastInitKFid()
+@@ -231,6 +239,7 @@ void Atlas::clearMap()
+ {
+     unique_lock<mutex> lock(mMutexAtlas);
+     mpCurrentMap->clear();
++    ++mnMapVersion;
+ }
+ 
+ void Atlas::clearAtlas()
+@@ -244,6 +253,7 @@ void Atlas::clearAtlas()
+     mspMaps.clear();
+     mpCurrentMap = static_cast<Map*>(NULL);
+     mnLastInitKFidMap = 0;
++    ++mnMapVersion;
+ }
+ 
+ Map* Atlas::GetCurrentMap()
 diff --git a/src/Frame.cc b/src/Frame.cc
 index a04c312..9cd6775 100644
 --- a/src/Frame.cc
@@ -426,16 +474,106 @@ index 93a50be..e62ef9f 100644
  
              vCalibration = {fx,fy,cx,cy,k0,k1,k2,k3};
 diff --git a/src/System.cc b/src/System.cc
-index 60d9c51..b708ceb 100644
+index 60d9c51..57768a4 100644
 --- a/src/System.cc
 +++ b/src/System.cc
-@@ -1330,6 +1330,16 @@ vector<MapPoint*> System::GetTrackedMapPoints()
+@@ -521,29 +521,18 @@ void System::Shutdown()
+ 
+     cout << "Shutdown" << endl;
+ 
+-    mpLocalMapper->RequestFinish();
++    // Finish loop correction while local mapping can still acknowledge stop
++    // requests. Export only after all optimization writers have stopped.
+     mpLoopCloser->RequestFinish();
+-    /*if(mpViewer)
+-    {
++    while (!mpLoopCloser->isFinished() || mpLoopCloser->isRunningGBA())
++        usleep(5000);
++    mpLocalMapper->RequestFinish();
++    while (!mpLocalMapper->isFinished())
++        usleep(5000);
++    if (mpViewer) {
+         mpViewer->RequestFinish();
+-        while(!mpViewer->isFinished())
+-            usleep(5000);
+-    }*/
+-
+-    // Wait until all thread have effectively stopped
+-    /*while(!mpLocalMapper->isFinished() || !mpLoopCloser->isFinished() || mpLoopCloser->isRunningGBA())
+-    {
+-        if(!mpLocalMapper->isFinished())
+-            cout << "mpLocalMapper is not finished" << endl;*/
+-        /*if(!mpLoopCloser->isFinished())
+-            cout << "mpLoopCloser is not finished" << endl;
+-        if(mpLoopCloser->isRunningGBA()){
+-            cout << "mpLoopCloser is running GBA" << endl;
+-            cout << "break anyway..." << endl;
+-            break;
+-        }*/
+-        /*usleep(5000);
+-    }*/
++        while (!mpViewer->isFinished()) usleep(5000);
++    }
+ 
+     if(!mStrSaveAtlasToFile.empty())
+     {
+@@ -1330,6 +1319,66 @@ vector<MapPoint*> System::GetTrackedMapPoints()
      return mTrackedMapPoints;
  }
  
 +vector<MapPoint*> System::GetAllMapPoints()
 +{
 +    return mpAtlas->GetAllMapPoints();
++}
++
++long unsigned int System::GetCurrentMapId()
++{
++    return mpAtlas->GetCurrentMap()->GetId();
++}
++
++unsigned long int System::GetMapVersion()
++{
++    return mpAtlas->GetMapVersion();
++}
++
++vector<Map*> System::GetAllMaps()
++{
++    return mpAtlas->GetAllMaps();
++}
++
++void System::SaveOptimizedFramePoses(const std::string& filename)
++{
++    // Same culled-keyframe chain as the upstream trajectory exporter, but retain
++    // all surviving maps and their native coordinate frames for surface fusion.
++    std::ofstream out(filename);
++    out << "frame,timestamp_s,map_id,tx,ty,tz,qx,qy,qz,qw\n";
++    auto reference = mpTracker->mlpReferences.begin();
++    auto timestamp = mpTracker->mlFrameTimes.begin();
++    auto lost = mpTracker->mlbLost.begin();
++    size_t frame = 0;
++    for (auto relative = mpTracker->mlRelativeFramePoses.begin();
++         relative != mpTracker->mlRelativeFramePoses.end() &&
++         reference != mpTracker->mlpReferences.end() &&
++         timestamp != mpTracker->mlFrameTimes.end() && lost != mpTracker->mlbLost.end();
++         ++relative, ++reference, ++timestamp, ++lost, ++frame) {
++        if (*lost || !*reference) continue;
++        KeyFrame* keyframe = *reference;
++        Sophus::SE3f chain;
++        int ancestors = 0;
++        while (keyframe && keyframe->isBad() && ancestors++ < 1000) {
++            chain = chain * keyframe->mTcp;
++            keyframe = keyframe->GetParent();
++        }
++        if (!keyframe || keyframe->isBad() || !keyframe->GetMap() ||
++            keyframe->GetMap()->IsBad() || keyframe->GetMap()->MapPointsInMap() < 50) continue;
++        const Sophus::SE3f Tcw = (*relative) * chain * keyframe->GetPose();
++        if (!Tcw.matrix().allFinite()) continue;
++        const auto t = Tcw.translation();
++        const auto q = Tcw.unit_quaternion();
++        out << frame << ',' << std::setprecision(15) << *timestamp << ','
++            << keyframe->GetMap()->GetId() << ',' << t.x() << ',' << t.y() << ',' << t.z()
++            << ',' << q.x() << ',' << q.y() << ',' << q.z() << ',' << q.w() << '\n';
++    }
 +}
 +
 +vector<KeyFrame*> System::GetAllKeyFrames()
@@ -446,6 +584,56 @@ index 60d9c51..b708ceb 100644
  vector<cv::KeyPoint> System::GetTrackedKeyPointsUn()
  {
      unique_lock<mutex> lock(mMutexState);
+@@ -1546,4 +1595,3 @@ string System::CalculateCheckSum(string filename, int type)
+ }
+ 
+ } //namespace ORB_SLAM
+-
+diff --git a/src/Tracking.cc b/src/Tracking.cc
+index 5191451..e75381f 100644
+--- a/src/Tracking.cc
++++ b/src/Tracking.cc
+@@ -36,6 +36,7 @@
+ 
+ 
+ using namespace std;
++#include "StereoInitGate.h"
+ 
+ namespace ORB_SLAM3
+ {
+@@ -1963,7 +1964,7 @@ void Tracking::Track()
+                     {
+                         mState = LOST;
+                     }
+-                    else if(pCurrentMap->KeyFramesInMap()>10)
++                    else if(pCurrentMap->KeyFramesInMap()>=3)
+                     {
+                         // cout << "KF in map: " << pCurrentMap->KeyFramesInMap() << endl;
+                         mState = RECENTLY_LOST;
+@@ -2003,7 +2004,7 @@ void Tracking::Track()
+                         bOK = Relocalization();
+                         //std::cout << "mCurrentFrame.mTimeStamp:" << to_string(mCurrentFrame.mTimeStamp) << std::endl;
+                         //std::cout << "mTimeStampLost:" << to_string(mTimeStampLost) << std::endl;
+-                        if(mCurrentFrame.mTimeStamp-mTimeStampLost>3.0f && !bOK)
++                        if(mCurrentFrame.mTimeStamp-mTimeStampLost>6.0f && !bOK)
+                         {
+                             mState = LOST;
+                             Verbose::PrintMess("Track Lost...", Verbose::VERBOSITY_NORMAL);
+@@ -2334,6 +2335,14 @@ void Tracking::Track()
+ 
+ void Tracking::StereoInitialization()
+ {
++    const int stereo_seeds = CountValidStereoSeeds(mCurrentFrame);
++    if (stereo_seeds < 50) {
++        if (mCurrentFrame.mnId % 30 == 0)
++            std::cout << "Stereo initialization waiting: " << stereo_seeds
++                      << "/50 valid stereo depth seeds; keep both eyes on textured surfaces"
++                      << std::endl;
++        return;
++    }
+     if(mCurrentFrame.N>500)
+     {
+         if (mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
 diff --git a/src/Viewer.cc b/src/Viewer.cc
 index 18f23f0..dbd14a3 100644
 --- a/src/Viewer.cc

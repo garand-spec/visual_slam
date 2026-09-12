@@ -25,6 +25,7 @@ if [[ ! -f "$COMPAT_LIB" ]]; then
 fi
 
 export SCAM_GST_DECODER=jpegdec
+export VISLAM_MODEL_PYTHON="${VISLAM_MODEL_PYTHON:-$ENV_ROOT/bin/python}"
 # The adapter owns the lightweight stereo/status window. Keeping OpenCV GUI
 # calls out of Pangolin's render thread avoids severe X11/GTK lock contention.
 export ORB_SLAM3_FRAME_VIEWER=0

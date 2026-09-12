@@ -27,7 +27,10 @@
   <div class="metric-grid"><div><span>轨迹长度（含抖动）</span><b id="distance">— <small>m</small></b></div><div><span>相对朝向变化</span><b id="angle">— <small>°</small></b></div></div>
   <div class="divider"></div><div class="section-label">摄像头位置 <small>地图坐标 / m</small></div><div class="coordinates"><div><span class="axis-x">X</span><b id="px">—</b></div><div><span class="axis-y">Y</span><b id="py">—</b></div><div><span class="axis-z">Z</span><b id="pz">—</b></div></div>
   <div class="info-row"><span>地图标识</span><b id="mapId">—</b></div><div class="info-row"><span>当前连续片段</span><b id="segmentId">—</b></div><div class="info-row"><span>可信位姿比例</span><b id="okRatio">—</b></div>
-  <div class="divider"></div><label class="toggle"><input id="cloud" type="checkbox">显示导出参考点云</label><p id="cloudNote" class="muted small">点云与在线轨迹可能因回环或地图切换错位，默认关闭。</p>
+  <div class="divider"></div><label class="toggle"><input id="surface" type="checkbox">显示物体表面模型</label>
+  <p id="modelNote" class="muted small">正在查询模型…</p>
+  <div id="modelControls" hidden><select id="modelMap" aria-label="表面模型地图"></select> <a id="downloadPly">PLY</a> · <a id="downloadObj">OBJ</a></div>
+  <label class="toggle"><input id="cloud" type="checkbox">显示导出参考点云</label><p id="cloudNote" class="muted small">点云与在线轨迹可能因回环或地图切换错位，默认关闭。</p>
   <div class="notice"><strong>这里测量的是摄像头</strong><p>固定佩戴时可作为人的运动参考。位置不是人体关节或身体中心；转头也会改变朝向。纯视觉坐标没有重力对齐，不能直接把 Y 当作身高。</p></div>
   <p id="segmentNote" class="muted small">跟踪失效、地图变化或明显跳变时断开轨迹。未知地图之间不保证坐标连续。</p>
  </aside>

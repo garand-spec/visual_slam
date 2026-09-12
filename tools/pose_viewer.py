@@ -153,14 +153,15 @@ class Store:
 
     def recording(self, name: str) -> dict:
         run = self.run(name)
-        file = run / "poses.csv"
-        stamp = (file.stat().st_mtime_ns, file.stat().st_size) if file.exists() else None
+        file = run / "model_poses.csv" if (run / "model_poses.csv").exists() else run / "poses.csv"
+        stamp = (file.name, file.stat().st_mtime_ns, file.stat().st_size) if file.exists() else None
         with self.lock:
             cached = self.cache.get(name)
             if cached and cached[0] == stamp:
                 return cached[1]
             parsed = read_frames(file)
             result = {"run": name, **parsed, "coordinate": "Twc; metres; xyzw",
+                      "pose_source": "optimized" if file.name == "model_poses.csv" else "online",
                       "cloud_available": (run / "dense_map.ply").is_file() or (run / "map.ply").is_file()}
             if len(self.cache) >= 4:
                 self.cache.pop(next(iter(self.cache)))
@@ -204,6 +205,32 @@ def make_handler(store: Store):
                         path = run / "map.ply"
                     result = {"points": read_cloud(path), "source": path.name,
                               "warning": "导出点云仅作参考：在线轨迹未随回环重新优化，历史数据也未记录地图身份。"}
+                elif url.path == "/api/models":
+                    run = store.run(name)
+                    status = run / "models/status.json"
+                    result = json.loads(status.read_text()) if status.is_file() else {
+                        "state": "pending" if (run / "depth_frames/frames.csv").exists() else "unavailable",
+                        "models": [], "message": "采集结束后生成表面模型" if (run / "depth_frames").exists()
+                        else "旧记录没有逐帧深度；表面建模需要新版重新采集。"}
+                elif url.path in {"/api/model", "/api/model-download"}:
+                    run = store.run(name)
+                    map_id = query.get("map", [""])[0]
+                    if not re.fullmatch(r"[0-9]{1,12}", map_id): raise ValueError("invalid map id")
+                    extension = "json" if url.path == "/api/model" else query.get("format",["ply"])[0]
+                    if extension not in {"json","ply","obj"}: raise ValueError("invalid model format")
+                    path = run / "models" / f"scene_map_{int(map_id)}.{extension}"
+                    if not path.is_file(): raise ValueError("model not available")
+                    if url.path == "/api/model":
+                        result = json.loads(path.read_text())
+                    else:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/octet-stream")
+                        self.send_header("Content-Length",str(path.stat().st_size))
+                        self.send_header("Content-Disposition",f'attachment; filename="{path.name}"')
+                        self.end_headers()
+                        with path.open('rb') as f:
+                            while chunk := f.read(65536):self.wfile.write(chunk)
+                        return
                 elif url.path.startswith("/api/"):
                     self.send_bytes(b'{"error":"not found"}', "application/json", 404)
                     return

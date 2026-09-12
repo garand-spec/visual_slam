@@ -20,3 +20,7 @@ When changing dependency source, update the matching patch with `git -C vendor/<
 
 Build the patched OpenCV and ORB-SLAM3 dependencies on the target device before running the root build scripts. Existing device builds are retained. Build products, datasets and runtime output are not uploaded. See the root README for environment and dependency paths.
 Each dependency retains its upstream license; ORB-SLAM3 is GPLv3.
+
+For new dependency source files, use `git -C vendor/<name> add -N <file>` before exporting the patch. ORB-SLAM3 now includes `include/StereoInitGate.h`.
+
+After building OpenCV, Pangolin, DBoW2 and g2o, run `./build_orbslam3_backend.sh` and `./build_orbslam3_rervision.sh`. The backend uses a fresh `build_modeling` directory to avoid obsolete absolute CMake paths. Both honor `VISLAM_ENV_ROOT`, `VISLAM_ORB_ROOT` and `VISLAM_OPENCV_ROOT`.

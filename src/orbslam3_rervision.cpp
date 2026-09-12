@@ -2,6 +2,7 @@
 #include <opencv2/calib3d.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <System.h>
 #include "ImuTypes.h"
 #include "scamlib.h"
@@ -27,9 +28,37 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <spawn.h>
+#include <fcntl.h>
+extern char** environ;
 
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
+
+static void start_surface_reconstruction(const fs::path& project, const fs::path& run) {
+    if (!fs::exists(run / "depth_frames/frames.csv")) return;
+    const char* configured = std::getenv("VISLAM_MODEL_PYTHON");
+    std::string python = configured ? configured : "python3";
+    std::string script = (project / "tools/reconstruct_scene.py").string();
+    std::string output = run.string();
+    char* args[] = {python.data(), script.data(), const_cast<char*>("--run"), output.data(), nullptr};
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO,
+        (run / "model_build.log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO);
+    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    posix_spawnattr_t attributes;
+    posix_spawnattr_init(&attributes);
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&attributes, 0);
+    pid_t pid = 0;
+    const int result = posix_spawnp(&pid, python.c_str(), &actions, &attributes, args, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attributes);
+    if (result == 0) std::cout << "surface reconstruction started pid=" << pid << '\n';
+    else std::cerr << "surface reconstruction could not start: " << result << '\n';
+}
 
 struct Options {
     int device = 0;
@@ -396,11 +425,15 @@ struct DenseFrame {
     cv::Mat right;
     Sophus::SE3f Tcw;
     int frame_id = 0;
+    double timestamp = 0;
+    unsigned long map_id = 0;
+    unsigned long map_version = 0;
 };
 
 class DenseMapper {
 public:
-    explicit DenseMapper(const Options& options) : options_(options) {}
+    DenseMapper(const Options& options, const fs::path& output)
+        : options_(options), output_(output) {}
 
     ~DenseMapper() {
         stop();
@@ -514,6 +547,23 @@ public:
                 min_disparity_, num_disparities, 5,
                 8 * 5 * 5, 32 * 5 * 5, 1, 31, 10, 80, 2,
                 cv::StereoSGBM::MODE_SGBM_3WAY);
+            right_min_disparity_ = -min_disparity_ - num_disparities + 1;
+            stereo_right_ = cv::StereoSGBM::create(
+                right_min_disparity_, num_disparities, 5,
+                8 * 5 * 5, 32 * 5 * 5, 1, 31, 10, 80, 2,
+                cv::StereoSGBM::MODE_SGBM_3WAY);
+            fs::create_directories(output_ / "depth_frames");
+            fs::create_directories(output_ / "dense_previews");
+            depth_manifest_.open(output_ / "depth_frames/frames.csv");
+            depth_manifest_ << "frame,timestamp_s,map_id,map_version,depth,image\n";
+            std::ofstream calibration(output_ / "depth_frames/calibration.json");
+            calibration << std::setprecision(15) << "{\"width\":" << dense_size_.width
+                << ",\"height\":" << dense_size_.height << ",\"fx\":" << rectified_focal
+                << ",\"fy\":" << rectified_focal << ",\"cx\":" << rectified_cx
+                << ",\"cy\":" << rectified_cy << ",\"depth_scale\":1000,\"rectified_to_camera\":[";
+            for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c)
+                calibration << (r || c ? "," : "") << rectified_to_camera_(r,c);
+            calibration << "]}\n";
 
             active_.store(true);
             worker_ = std::thread(&DenseMapper::worker_loop, this);
@@ -530,7 +580,8 @@ public:
     }
 
     void submit(const cv::Mat& left, const cv::Mat& right,
-                const Sophus::SE3f& Tcw, int frame_id) {
+                const Sophus::SE3f& Tcw, int frame_id, double timestamp,
+                unsigned long map_id, unsigned long map_version) {
         if (!active_.load()) return;
         auto frame = std::make_shared<DenseFrame>();
         // cv::Mat reference counting keeps these immutable frame buffers alive;
@@ -539,6 +590,9 @@ public:
         frame->right = right;
         frame->Tcw = Tcw;
         frame->frame_id = frame_id;
+        frame->timestamp = timestamp;
+        frame->map_id = map_id;
+        frame->map_version = map_version;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             latest_ = std::move(frame);
@@ -550,6 +604,7 @@ public:
         if (!active_.exchange(false)) return;
         cv_.notify_all();
         if (worker_.joinable()) worker_.join();
+        depth_manifest_.flush();
     }
 
     size_t point_count() const {
@@ -603,6 +658,15 @@ private:
     }
 
     void process(const DenseFrame& frame) {
+        if (have_epoch_ && frame.map_version != current_epoch_) {
+            write_ply((output_ / "dense_previews" /
+                ("map_" + std::to_string(current_map_) + "_epoch_" + std::to_string(current_epoch_) + ".ply")).string());
+            voxels_.clear();
+            point_count_.store(0);
+        }
+        have_epoch_ = true;
+        current_epoch_ = frame.map_version;
+        current_map_ = frame.map_id;
         cv::Mat left_small, right_small, left_rectified, right_rectified;
         cv::resize(frame.left, left_small, dense_size_, 0, 0, cv::INTER_AREA);
         cv::resize(frame.right, right_small, dense_size_, 0, 0, cv::INTER_AREA);
@@ -611,10 +675,13 @@ private:
         cv::remap(right_small, right_rectified, map2x_, map2y_,
                   cv::INTER_LINEAR, cv::BORDER_CONSTANT);
 
-        cv::Mat disparity16, disparity, points3d;
+        cv::Mat disparity16, disparity, points3d, right_disparity16, right_disparity;
         stereo_->compute(left_rectified, right_rectified, disparity16);
+        stereo_right_->compute(right_rectified, left_rectified, right_disparity16);
         disparity16.convertTo(disparity, CV_32F, 1.0 / 16.0);
+        right_disparity16.convertTo(right_disparity, CV_32F, 1.0 / 16.0);
         cv::reprojectImageTo3D(disparity, points3d, Q_, false, CV_32F);
+        cv::Mat depth_mm = cv::Mat::zeros(dense_size_, CV_16UC1);
 
         if (fused_frames_.load() == 0) {
             double disparity_min = 0.0;
@@ -633,16 +700,20 @@ private:
 
         const Sophus::SE3f Twc = frame.Tcw.inverse();
         constexpr size_t max_voxels = 2000000;
-        for (int y = 0; y < points3d.rows; y += options_.dense_stride) {
+        for (int y = 0; y < points3d.rows; ++y) {
             const auto* points = points3d.ptr<cv::Vec3f>(y);
             const auto* disparities = disparity.ptr<float>(y);
             const auto* intensities = left_rectified.ptr<uint8_t>(y);
             const auto* right_pixels = right_rectified.ptr<uint8_t>(y);
-            for (int x = 0; x < points3d.cols; x += options_.dense_stride) {
+            const auto* right_disparities = right_disparity.ptr<float>(y);
+            for (int x = 0; x < points3d.cols; ++x) {
                 const float d = disparities[x];
+                const int xr = std::isfinite(d) ? static_cast<int>(std::lround(x - d)) : -1;
                 if (!std::isfinite(d) || d <= min_disparity_ + 0.5f ||
                     d >= min_disparity_ + 127.5f ||
-                    intensities[x] < 3 || right_pixels[x] < 3) {
+                    xr < 0 || xr >= points3d.cols || intensities[x] < 3 || right_pixels[xr] < 3 ||
+                    right_disparities[xr] < right_min_disparity_ ||
+                    std::abs(d + right_disparities[xr]) > 1.5f) {
                     continue;
                 }
                 const cv::Vec3f& rectified = points[x];
@@ -656,6 +727,9 @@ private:
                     depth > options_.dense_max_depth) {
                     continue;
                 }
+                if (rectified[2] <= 0 || rectified[2] >= 65.535f) continue;
+                depth_mm.at<uint16_t>(y,x) = static_cast<uint16_t>(std::lround(rectified[2] * 1000));
+                if (y % options_.dense_stride || x % options_.dense_stride) continue;
                 const Eigen::Vector3f camera(camera_cv[0], camera_cv[1], camera_cv[2]);
                 const Eigen::Vector3f world = Twc * camera;
                 if (!std::isfinite(world.x()) || !std::isfinite(world.y()) ||
@@ -681,14 +755,34 @@ private:
         }
         point_count_.store(voxels_.size());
         fused_frames_.fetch_add(1);
+        // Keep reprojection evidence for final-pose surface reconstruction. Bounded
+        // capture count prevents unbounded disk growth in unattended sessions.
+        if (archived_frames_ < 2000 && cv::countNonZero(depth_mm) >= 1000) {
+            const std::string stem = std::to_string(frame.frame_id);
+            if (cv::imwrite((output_ / "depth_frames" / (stem + "_depth.png")).string(), depth_mm) &&
+                cv::imwrite((output_ / "depth_frames" / (stem + "_gray.png")).string(), left_rectified)) {
+                depth_manifest_ << frame.frame_id << ',' << std::setprecision(15) << frame.timestamp
+                    << ',' << frame.map_id << ',' << frame.map_version << ','
+                    << stem << "_depth.png," << stem << "_gray.png\n";
+                depth_manifest_.flush();
+                ++archived_frames_;
+            }
+        }
     }
 
     Options options_;
+    fs::path output_;
+    std::ofstream depth_manifest_;
+    int archived_frames_ = 0;
+    bool have_epoch_ = false;
+    unsigned long current_epoch_ = 0, current_map_ = 0;
     cv::Size dense_size_;
     cv::Mat map1x_, map1y_, map2x_, map2y_, Q_;
     cv::Matx33f rectified_to_camera_ = cv::Matx33f::eye();
     cv::Ptr<cv::StereoSGBM> stereo_;
+    cv::Ptr<cv::StereoSGBM> stereo_right_;
     int min_disparity_ = 0;
+    int right_min_disparity_ = 0;
     std::atomic<bool> active_{false};
     std::atomic<size_t> point_count_{0};
     std::atomic<int> fused_frames_{0};
@@ -883,6 +977,7 @@ int main(int argc, char** argv) {
     double previous_camera_time = -1.0;
     size_t map_points_cache = 0;
     int ok_frames_since_dense = 0;
+    int consecutive_good = 0;
     auto start = Clock::now();
     std::thread display_thread;
 
@@ -922,7 +1017,7 @@ int main(int argc, char** argv) {
             options.use_imu ? ORB_SLAM3::System::IMU_STEREO
                             : ORB_SLAM3::System::STEREO,
             options.pangolin_viewer);
-        DenseMapper dense_mapper(options);
+        DenseMapper dense_mapper(options, output_dir);
         const bool dense_active = options.dense_mapping && dense_mapper.start();
         if (options.opencv_viewer) {
             display_running.store(true);
@@ -965,8 +1060,8 @@ int main(int argc, char** argv) {
             // Existing map accessors are implemented in this ORB-SLAM3 build.
             // Record identity so the viewer never joins independent Atlas maps.
             const auto current_keyframes = slam.GetAllKeyFrames();
-            const long long map_id = current_keyframes.empty() ? -1 :
-                static_cast<long long>(current_keyframes.front()->GetMap()->GetId());
+            const long long map_id = static_cast<long long>(slam.GetCurrentMapId());
+            const unsigned long map_version = slam.GetMapVersion();
             // GetAllMapPoints copies the whole map; only refresh every 15 frames.
             if (processed % 15 == 0) {
                 map_points_cache = slam.GetAllMapPoints().size();
@@ -996,10 +1091,13 @@ int main(int argc, char** argv) {
                      << pose_telemetry.segment_id() << "\n";
             if (processed % 3 == 0) pose_csv.flush();
 
-            if (dense_active && tracking_is_ok(state)) {
+            const bool reliable_depth_pose = tracking_is_ok(state) && tracked_features >= 50 && current_keyframes.size() >= 2;
+            consecutive_good = reliable_depth_pose ? consecutive_good + 1 : 0;
+            if (!reliable_depth_pose) ok_frames_since_dense = 0;
+            if (dense_active && consecutive_good >= 5) {
                 ++ok_frames_since_dense;
                 if (ok_frames_since_dense >= options.dense_interval) {
-                    dense_mapper.submit(left, right, pose, processed);
+                    dense_mapper.submit(left, right, pose, processed, camera_time, map_id, map_version);
                     ok_frames_since_dense = 0;
                 }
             }
@@ -1123,6 +1221,7 @@ int main(int argc, char** argv) {
                       << " dense_points_exported=" << dense_exported << "\n";
         }
         slam.Shutdown();
+        slam.SaveOptimizedFramePoses((fs::path(output_dir) / "optimized_poses.csv").string());
         const auto all_keyframes = slam.GetAllKeyFrames();
         if (!all_keyframes.empty()) {
             slam.SaveTrajectoryEuRoC(fs::path(output_dir) / "CameraTrajectory.txt");
@@ -1133,7 +1232,13 @@ int main(int argc, char** argv) {
             std::ofstream(fs::path(output_dir) / "KeyFrameTrajectory.txt");
             std::cout << "no keyframes; trajectory files left empty\n";
         }
-        const auto all_map_points = slam.GetAllMapPoints();
+        auto all_map_points = slam.GetAllMapPoints();
+        // Keep the useful map even if the last active map was a failed restart.
+        for (auto* map : slam.GetAllMaps()) {
+            if (!map || map->IsBad()) continue;
+            const auto candidates = map->GetAllMapPoints();
+            if (candidates.size() > all_map_points.size()) all_map_points = candidates;
+        }
         const size_t exported_points = write_ply(
             fs::path(output_dir) / "map.ply", all_map_points);
         std::cout << "map_points_total=" << all_map_points.size()
@@ -1165,6 +1270,7 @@ int main(int argc, char** argv) {
               << processed / elapsed
               << " output=" << output_dir << "\n";
     const int exit_code = processed > 0 ? 0 : 8;
+    if (processed > 0 && options.dense_mapping) start_surface_reconstruction(project_root, output_dir);
     std::cout.flush();
     std::cerr.flush();
     // Pangolin and GTK both register process-global teardown handlers. On this
