@@ -5,6 +5,7 @@
 #include <System.h>
 #include "ImuTypes.h"
 #include "scamlib.h"
+#include "pose_telemetry.h"
 
 #include <algorithm>
 #include <array>
@@ -888,8 +889,9 @@ int main(int argc, char** argv) {
     // Output runs are only created once the camera is confirmed working, so a
     // failed startup leaves no empty run_* directories behind.
     const std::string output_dir = make_output_dir(options.output_root);
+    PoseTelemetry pose_telemetry(output_dir);
     std::ofstream pose_csv(fs::path(output_dir) / "poses.csv");
-    pose_csv << "frame,timestamp_s,state,map_points,tx,ty,tz,qx,qy,qz,qw\n";
+    pose_csv << "frame,timestamp_s,state,map_points,tx,ty,tz,qx,qy,qz,qw,map_id,tracked_features,source_segment\n";
     std::ofstream health_csv(fs::path(output_dir) / "tracking_health.csv");
     health_csv << "frame,timestamp_s,state,state_name,detected_features,"
                   "tracked_features,map_points,"
@@ -960,6 +962,11 @@ int main(int argc, char** argv) {
                 Clock::now() - tracking_start).count();
 
             const int state = slam.GetTrackingState();
+            // Existing map accessors are implemented in this ORB-SLAM3 build.
+            // Record identity so the viewer never joins independent Atlas maps.
+            const auto current_keyframes = slam.GetAllKeyFrames();
+            const long long map_id = current_keyframes.empty() ? -1 :
+                static_cast<long long>(current_keyframes.front()->GetMap()->GetId());
             // GetAllMapPoints copies the whole map; only refresh every 15 frames.
             if (processed % 15 == 0) {
                 map_points_cache = slam.GetAllMapPoints().size();
@@ -975,11 +982,19 @@ int main(int argc, char** argv) {
                 }));
             const auto t = pose.translation();
             const auto q = pose.unit_quaternion();
+            const Sophus::SE3f world_pose = pose.inverse();
+            const auto world_t = world_pose.translation();
+            const auto world_q = world_pose.unit_quaternion();
+            pose_telemetry.update(processed, camera_time, state, map_id, tracked_features,
+                {world_t.x(), world_t.y(), world_t.z()},
+                {world_q.x(), world_q.y(), world_q.z(), world_q.w()});
             pose_csv << processed << "," << std::setprecision(12) << camera_time
                      << "," << state << "," << map_points << ","
                      << t.x() << "," << t.y() << "," << t.z() << ","
                      << q.x() << "," << q.y() << "," << q.z() << "," << q.w()
-                     << "\n";
+                     << "," << map_id << "," << tracked_features << ","
+                     << pose_telemetry.segment_id() << "\n";
+            if (processed % 3 == 0) pose_csv.flush();
 
             if (dense_active && tracking_is_ok(state)) {
                 ++ok_frames_since_dense;
@@ -1132,6 +1147,7 @@ int main(int argc, char** argv) {
     display_cv.notify_all();
     if (display_thread.joinable()) display_thread.join();
 
+    pose_telemetry.finish();
     pose_csv.close();
     health_csv.close();
     SCAM_CloseDevice(options.device);

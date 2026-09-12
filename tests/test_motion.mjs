@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+const code = await readFile(new URL('../web/pose_viewer/motion.js', import.meta.url), 'utf8');
+const {prepareFrames} = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const frame=(t,x,map=0,valid=true)=>({t,p:[x,0,0],q:[0,0,0,1],map_id:map,valid});
+const frames=prepareFrames([frame(0,0),frame(.1,1),frame(.2,1,0,false),frame(.3,2),frame(.4,2,1),frame(.5,9,1),frame(.4,10,1)]);
+assert.deepEqual(frames.map(f=>f.segment),[0,0,-1,1,2,3,4]);
+assert.equal(frames[1].distance,1);
+assert.equal(frames[3].distance,0);
+assert.equal(frames[4].displacement,0);
+assert.equal(prepareFrames([frame(0,0),{...frame(.1,0),q:[0,0,1,0]}])[1].angle,180);
+assert.deepEqual(prepareFrames([{...frame(0,0),source_segment:0},{...frame(.1,0),source_segment:1}]).map(f=>f.segment),[0,1]);
+console.log('Motion segmentation, distance and orientation tests passed.');
