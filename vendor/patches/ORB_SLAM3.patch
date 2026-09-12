@@ -1,0 +1,662 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 016e743..5e29ace 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,5 +1,6 @@
+ cmake_minimum_required(VERSION 2.8)
+ project(ORB_SLAM3)
++option(ORB_SLAM3_USE_CUDA "Use CUDA ORB extraction" OFF)
+ 
+ IF(NOT CMAKE_BUILD_TYPE)
+   SET(CMAKE_BUILD_TYPE Release)
+@@ -17,9 +18,9 @@ include(CheckCXXCompilerFlag)
+ CHECK_CXX_COMPILER_FLAG("-std=c++11" COMPILER_SUPPORTS_CXX11)
+ CHECK_CXX_COMPILER_FLAG("-std=c++0x" COMPILER_SUPPORTS_CXX0X)
+ if(COMPILER_SUPPORTS_CXX11)
+-   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
++   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
+    add_definitions(-DCOMPILEDWITHC11)
+-   message(STATUS "Using flag -std=c++11.")
++   message(STATUS "Using flag -std=c++14.")
+ elseif(COMPILER_SUPPORTS_CXX0X)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
+    add_definitions(-DCOMPILEDWITHC0X)
+@@ -125,6 +126,13 @@ ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+ -lcrypto
+ )
+ 
++if(ORB_SLAM3_USE_CUDA)
++    add_definitions(-DORB_SLAM3_USE_CUDA)
++    target_link_libraries(${PROJECT_NAME}
++        opencv_cudafeatures2d opencv_cudafilters opencv_cudaimgproc
++        opencv_cudaarithm opencv_cudawarping)
++endif()
++
+ # If RealSense SDK is found the library is added and its examples compiled
+ if(realsense2_FOUND)
+     include_directories(${PROJECT_NAME}
+diff --git a/build.sh b/build.sh
+index 96d1c09..20d183e 100755
+--- a/build.sh
++++ b/build.sh
+@@ -1,27 +1,29 @@
++set -e
++
+ echo "Configuring and building Thirdparty/DBoW2 ..."
+ 
+ cd Thirdparty/DBoW2
+-mkdir build
++mkdir -p build
+ cd build
+-cmake .. -DCMAKE_BUILD_TYPE=Release
++cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+ make -j
+ 
+ cd ../../g2o
+ 
+ echo "Configuring and building Thirdparty/g2o ..."
+ 
+-mkdir build
++mkdir -p build
+ cd build
+-cmake .. -DCMAKE_BUILD_TYPE=Release
++cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+ make -j
+ 
+ cd ../../Sophus
+ 
+ echo "Configuring and building Thirdparty/Sophus ..."
+ 
+-mkdir build
++mkdir -p build
+ cd build
+-cmake .. -DCMAKE_BUILD_TYPE=Release
++cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF
+ make -j
+ 
+ cd ../../../
+@@ -34,7 +36,11 @@ cd ..
+ 
+ echo "Configuring and building ORB_SLAM3 ..."
+ 
+-mkdir build
++mkdir -p build
+ cd build
+-cmake .. -DCMAKE_BUILD_TYPE=Release
++cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
++  -DOpenCV_DIR=/home/linaro/projects/visual_slam/vendor/opencv_cuda/install/lib/cmake/opencv4 \
++  -DORB_SLAM3_USE_CUDA=ON \
++  -DCMAKE_BUILD_RPATH=/home/linaro/projects/visual_slam/vendor/opencv_cuda/install/lib \
++  -DCMAKE_INSTALL_RPATH=/home/linaro/projects/visual_slam/vendor/opencv_cuda/install/lib
+ make -j4
+diff --git a/include/Atlas.h b/include/Atlas.h
+index e1e2717..be44027 100644
+--- a/include/Atlas.h
++++ b/include/Atlas.h
+@@ -139,6 +139,10 @@ public:
+ 
+     long unsigned int GetNumLivedMP();
+ 
++    // Monotonic counter that increases whenever the current map is created or
++    // switched. Used by the dense mapper to detect map resets.
++    unsigned long int GetMapVersion();
++
+ protected:
+ 
+     std::set<Map*> mspMaps;
+@@ -152,6 +156,8 @@ protected:
+ 
+     unsigned long int mnLastInitKFidMap;
+ 
++    unsigned long int mnMapVersion = 0;
++
+     Viewer* mpViewer;
+     bool mHasViewer;
+ 
+diff --git a/include/ORBextractor.h b/include/ORBextractor.h
+index bb7aace..0975455 100644
+--- a/include/ORBextractor.h
++++ b/include/ORBextractor.h
+@@ -22,7 +22,10 @@
+ #include <vector>
+ #include <list>
+ #include <opencv2/opencv.hpp>
+-
++#ifdef ORB_SLAM3_USE_CUDA
++#include <opencv2/core/cuda.hpp>
++#include <opencv2/cudafeatures2d.hpp>
++#endif
+ 
+ namespace ORB_SLAM3
+ {
+@@ -106,9 +109,22 @@ protected:
+     std::vector<float> mvInvScaleFactor;    
+     std::vector<float> mvLevelSigma2;
+     std::vector<float> mvInvLevelSigma2;
++
++#ifdef ORB_SLAM3_USE_CUDA
++    cv::Ptr<cv::cuda::ORB> mpCudaORB;
++    // Each extractor instance owns one non-default stream. ORB-SLAM3 invokes
++    // the left and right extractors from separate CPU threads, so explicit
++    // streams allow both GPU jobs to overlap instead of serializing on
++    // Stream::Null(). Buffers persist to remove per-frame cudaMalloc/free.
++    cv::cuda::Stream mCudaStream;
++    cv::cuda::GpuMat mCudaImage;
++    cv::cuda::GpuMat mCudaKeypoints;
++    cv::cuda::GpuMat mCudaDescriptors;
++    cv::Mat mCudaHostDescriptors;
++    std::vector<cv::KeyPoint> mvCudaKeypoints;
++#endif
+ };
+ 
+ } //namespace ORB_SLAM
+ 
+ #endif
+-
+diff --git a/include/System.h b/include/System.h
+index 872c86e..128e33e 100644
+--- a/include/System.h
++++ b/include/System.h
+@@ -175,6 +175,8 @@ public:
+     // You can call this right after TrackMonocular (or stereo or RGBD)
+     int GetTrackingState();
+     std::vector<MapPoint*> GetTrackedMapPoints();
++    std::vector<MapPoint*> GetAllMapPoints();
++    std::vector<KeyFrame*> GetAllKeyFrames();
+     std::vector<cv::KeyPoint> GetTrackedKeyPointsUn();
+ 
+     // For debugging
+@@ -186,6 +188,24 @@ public:
+ 
+     float GetImageScale();
+ 
++    // --- Map identity (used by the dense mapper / monitoring) ---
++    // Id of the current active map in the atlas.
++    long unsigned int GetCurrentMapId();
++    // Number of keyframes in the current active map.
++    long unsigned int GetCurrentMapKeyFrames();
++    // Id of the reference keyframe used to track the most recent frame.
++    long unsigned int GetReferenceKeyFrameId();
++    // Monotonic version of the current map (increases on map create/switch).
++    unsigned long int GetMapVersion();
++    // Returns true once when the current map has been created or switched since
++    // the previous call to this function (used to detect a map reset).
++    bool GetMapResetFlag();
++    // Relative pose (reference-KF -> camera) and reference KF id of the most
++    // recently processed frame. Mirrors the data stored for trajectory export.
++    bool GetLastFrameRelativePose(Sophus::SE3f& Tcr, long unsigned int& ref_kf_id);
++    // All maps in the atlas (needed to reconstruct final keyframe poses).
++    std::vector<Map*> GetAllMaps();
++
+ #ifdef REGISTER_TIMES
+     void InsertRectTime(double& time);
+     void InsertResizeTime(double& time);
+@@ -262,6 +282,10 @@ private:
+     string mStrVocabularyFilePath;
+ 
+     Settings* settings_;
++
++    // Last map version notified through GetMapResetFlag().
++    std::mutex mMutexMapVersion;
++    unsigned long int mnNotifiedMapVersion = 0;
+ };
+ 
+ }// namespace ORB_SLAM
+diff --git a/include/Tracking.h b/include/Tracking.h
+index 863c98e..3668459 100644
+--- a/include/Tracking.h
++++ b/include/Tracking.h
+@@ -94,6 +94,11 @@ public:
+         return mpLastKeyFrame;
+     }
+ 
++    long unsigned int GetReferenceKeyFrameId()
++    {
++        return mpReferenceKF ? mpReferenceKF->mnId : 0;
++    }
++
+     void CreateMapInAtlas();
+     //std::mutex mMutexTracks;
+ 
+diff --git a/src/Atlas.cc b/src/Atlas.cc
+index 7bdea06..3c9511e 100644
+--- a/src/Atlas.cc
++++ b/src/Atlas.cc
+@@ -74,6 +74,7 @@ void Atlas::CreateNewMap()
+     mpCurrentMap = new Map(mnLastInitKFidMap);
+     mpCurrentMap->SetCurrentMap();
+     mspMaps.insert(mpCurrentMap);
++    ++mnMapVersion;
+ }
+ 
+ void Atlas::ChangeMap(Map* pMap)
+@@ -86,6 +87,13 @@ void Atlas::ChangeMap(Map* pMap)
+ 
+     mpCurrentMap = pMap;
+     mpCurrentMap->SetCurrentMap();
++    ++mnMapVersion;
++}
++
++unsigned long int Atlas::GetMapVersion()
++{
++    unique_lock<mutex> lock(mMutexAtlas);
++    return mnMapVersion;
+ }
+ 
+ unsigned long int Atlas::GetLastInitKFid()
+diff --git a/src/Frame.cc b/src/Frame.cc
+index a04c312..9cd6775 100644
+--- a/src/Frame.cc
++++ b/src/Frame.cc
+@@ -1109,8 +1109,13 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
+     mTimeStereoMatch = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndStereoMatches - time_StartStereoMatches).count();
+ #endif
+ 
+-    //Put all descriptors in the same matrix
+-    cv::vconcat(mDescriptors,mDescriptorsRight,mDescriptors);
++    // Put all descriptors in the same matrix. OpenCV 4.12 rejects vconcat
++    // when one input is a dimensionless empty Mat, which is valid here when
++    // one fisheye is covered or sees no texture.
++    if(mDescriptors.empty())
++        mDescriptors = mDescriptorsRight.clone();
++    else if(!mDescriptorsRight.empty())
++        cv::vconcat(mDescriptors,mDescriptorsRight,mDescriptors);
+ 
+     mvpMapPoints = vector<MapPoint*>(N,static_cast<MapPoint*>(nullptr));
+     mvbOutlier = vector<bool>(N,false);
+@@ -1124,13 +1129,6 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
+ }
+ 
+ void Frame::ComputeStereoFishEyeMatches() {
+-    //Speed it up by matching keypoints in the lapping area
+-    vector<cv::KeyPoint> stereoLeft(mvKeys.begin() + monoLeft, mvKeys.end());
+-    vector<cv::KeyPoint> stereoRight(mvKeysRight.begin() + monoRight, mvKeysRight.end());
+-
+-    cv::Mat stereoDescLeft = mDescriptors.rowRange(monoLeft, mDescriptors.rows);
+-    cv::Mat stereoDescRight = mDescriptorsRight.rowRange(monoRight, mDescriptorsRight.rows);
+-
+     mvLeftToRightMatch = vector<int>(Nleft,-1);
+     mvRightToLeftMatch = vector<int>(Nright,-1);
+     mvDepth = vector<float>(Nleft,-1.0f);
+@@ -1138,6 +1136,23 @@ void Frame::ComputeStereoFishEyeMatches() {
+     mvStereo3Dpoints = vector<Eigen::Vector3f>(Nleft);
+     mnCloseMPs = 0;
+ 
++    // Either fisheye can legitimately produce no descriptors when it is
++    // covered or pointed at a textureless surface. In that case N can still
++    // be non-zero because the other eye has features, but rowRange() on the
++    // empty descriptor matrix asserts. Keep the frame valid as monocular-only
++    // observations and report no stereo matches for this frame.
++    if(mDescriptors.empty() || mDescriptorsRight.empty() ||
++       monoLeft < 0 || monoRight < 0 ||
++       monoLeft >= mDescriptors.rows || monoRight >= mDescriptorsRight.rows)
++        return;
++
++    //Speed it up by matching keypoints in the lapping area
++    vector<cv::KeyPoint> stereoLeft(mvKeys.begin() + monoLeft, mvKeys.end());
++    vector<cv::KeyPoint> stereoRight(mvKeysRight.begin() + monoRight, mvKeysRight.end());
++
++    cv::Mat stereoDescLeft = mDescriptors.rowRange(monoLeft, mDescriptors.rows);
++    cv::Mat stereoDescRight = mDescriptorsRight.rowRange(monoRight, mDescriptorsRight.rows);
++
+     //Perform a brute force between Keypoint in the left and right image
+     vector<vector<cv::DMatch>> matches;
+ 
+diff --git a/src/ORBextractor.cc b/src/ORBextractor.cc
+index 970b7cc..cd3aeb9 100644
+--- a/src/ORBextractor.cc
++++ b/src/ORBextractor.cc
+@@ -56,6 +56,10 @@
+ #include <opencv2/highgui/highgui.hpp>
+ #include <opencv2/features2d/features2d.hpp>
+ #include <opencv2/imgproc/imgproc.hpp>
++#ifdef ORB_SLAM3_USE_CUDA
++#include <opencv2/core/cuda.hpp>
++#include <opencv2/cudafeatures2d.hpp>
++#endif
+ #include <vector>
+ #include <iostream>
+ 
+@@ -1093,6 +1097,65 @@ namespace ORB_SLAM3
+         Mat image = _image.getMat();
+         assert(image.type() == CV_8UC1 );
+ 
++#ifdef ORB_SLAM3_USE_CUDA
++        // CUDA ORB keeps the expensive FAST/BRIEF extraction on the Thor GPU.
++        // The CPU implementation below remains the compatibility fallback.
++        if (cv::cuda::getCudaEnabledDeviceCount() > 0)
++        {
++            try
++            {
++                if (!mpCudaORB)
++                    mpCudaORB = cv::cuda::ORB::create(
++                        nfeatures, static_cast<float>(scaleFactor), nlevels,
++                        EDGE_THRESHOLD, 0, 2, cv::ORB::HARRIS_SCORE, PATCH_SIZE, minThFAST);
++                mCudaImage.create(image.size(), image.type());
++                mCudaImage.upload(image, mCudaStream);
++                mpCudaORB->detectAndComputeAsync(
++                    mCudaImage, cv::cuda::GpuMat(), mCudaKeypoints,
++                    mCudaDescriptors, false, mCudaStream);
++                mCudaDescriptors.download(mCudaHostDescriptors, mCudaStream);
++                mCudaStream.waitForCompletion();
++                mpCudaORB->convert(mCudaKeypoints, mvCudaKeypoints);
++
++                if (!mvCudaKeypoints.empty() &&
++                    mCudaHostDescriptors.rows == static_cast<int>(mvCudaKeypoints.size()) &&
++                    mCudaHostDescriptors.cols == 32 && mCudaHostDescriptors.type() == CV_8UC1)
++                {
++                    int monoCount = 0;
++                    int stereoCount = 0;
++                    for (const cv::KeyPoint& kp : mvCudaKeypoints)
++                    {
++                        if (kp.pt.x >= vLappingArea[0] && kp.pt.x <= vLappingArea[1])
++                            ++stereoCount;
++                        else
++                            ++monoCount;
++                    }
++
++                    const int total = monoCount + stereoCount;
++                    _keypoints.resize(total);
++                    _descriptors.create(total, 32, CV_8U);
++                    cv::Mat outputDescriptors = _descriptors.getMat();
++                    int monoIndex = 0;
++                    int stereoIndex = total - 1;
++                    for (int i = 0; i < total; ++i)
++                    {
++                        const cv::KeyPoint& kp = mvCudaKeypoints[i];
++                        const int outIndex = (kp.pt.x >= vLappingArea[0] && kp.pt.x <= vLappingArea[1])
++                            ? stereoIndex-- : monoIndex++;
++                        _keypoints[outIndex] = kp;
++                        mCudaHostDescriptors.row(i).copyTo(outputDescriptors.row(outIndex));
++                    }
++                    return monoCount;
++                }
++            }
++            catch (const cv::Exception& e)
++            {
++                std::cerr << "[ORBextractor] CUDA ORB failed, using CPU fallback: "
++                          << e.what() << std::endl;
++            }
++        }
++#endif
++
+         // Pre-compute the scale pyramid
+         ComputePyramid(image);
+ 
+diff --git a/src/ORBmatcher.cc b/src/ORBmatcher.cc
+index 9129683..b0cd730 100644
+--- a/src/ORBmatcher.cc
++++ b/src/ORBmatcher.cc
+@@ -1970,7 +1970,17 @@ namespace ORB_SLAM3
+ 
+                         if(mbCheckOrientation)
+                         {
+-                            float rot = pKF->mvKeysUn[i].angle-CurrentFrame.mvKeysUn[bestIdx2].angle;
++                            const cv::KeyPoint &kpKF = (pKF->NLeft == -1)
++                                ? pKF->mvKeysUn[i]
++                                : (i < static_cast<size_t>(pKF->NLeft))
++                                    ? pKF->mvKeys[i]
++                                    : pKF->mvKeysRight[i - pKF->NLeft];
++                            const cv::KeyPoint &kpCurrent = (CurrentFrame.Nleft == -1)
++                                ? CurrentFrame.mvKeysUn[bestIdx2]
++                                : (bestIdx2 < CurrentFrame.Nleft)
++                                    ? CurrentFrame.mvKeys[bestIdx2]
++                                    : CurrentFrame.mvKeysRight[bestIdx2 - CurrentFrame.Nleft];
++                            float rot = kpKF.angle-kpCurrent.angle;
+                             if(rot<0.0)
+                                 rot+=360.0f;
+                             int bin = round(rot*factor);
+diff --git a/src/Settings.cc b/src/Settings.cc
+index 93a50be..e62ef9f 100644
+--- a/src/Settings.cc
++++ b/src/Settings.cc
+@@ -315,10 +315,10 @@ namespace ORB_SLAM3 {
+             float cx = readParameter<float>(fSettings,"Camera2.cx",found);
+             float cy = readParameter<float>(fSettings,"Camera2.cy",found);
+ 
+-            float k0 = readParameter<float>(fSettings,"Camera1.k1",found);
+-            float k1 = readParameter<float>(fSettings,"Camera1.k2",found);
+-            float k2 = readParameter<float>(fSettings,"Camera1.k3",found);
+-            float k3 = readParameter<float>(fSettings,"Camera1.k4",found);
++            float k0 = readParameter<float>(fSettings,"Camera2.k1",found);
++            float k1 = readParameter<float>(fSettings,"Camera2.k2",found);
++            float k2 = readParameter<float>(fSettings,"Camera2.k3",found);
++            float k3 = readParameter<float>(fSettings,"Camera2.k4",found);
+ 
+ 
+             vCalibration = {fx,fy,cx,cy,k0,k1,k2,k3};
+diff --git a/src/System.cc b/src/System.cc
+index 60d9c51..b708ceb 100644
+--- a/src/System.cc
++++ b/src/System.cc
+@@ -1330,6 +1330,16 @@ vector<MapPoint*> System::GetTrackedMapPoints()
+     return mTrackedMapPoints;
+ }
+ 
++vector<MapPoint*> System::GetAllMapPoints()
++{
++    return mpAtlas->GetAllMapPoints();
++}
++
++vector<KeyFrame*> System::GetAllKeyFrames()
++{
++    return mpAtlas->GetAllKeyFrames();
++}
++
+ vector<cv::KeyPoint> System::GetTrackedKeyPointsUn()
+ {
+     unique_lock<mutex> lock(mMutexState);
+diff --git a/src/Viewer.cc b/src/Viewer.cc
+index 18f23f0..dbd14a3 100644
+--- a/src/Viewer.cc
++++ b/src/Viewer.cc
+@@ -20,11 +20,51 @@
+ #include "Viewer.h"
+ #include <pangolin/pangolin.h>
+ 
++#include <algorithm>
+ #include <mutex>
++#include <thread>
++#include <cstdlib>
+ 
+ namespace ORB_SLAM3
+ {
+ 
++namespace
++{
++const char* TrackingStateLabel(const int state)
++{
++    switch(state)
++    {
++        case -1: return "SYSTEM NOT READY";
++        case 0: return "WAITING FOR CAMERA";
++        case 1: return "INITIALIZING";
++        case 2: return "TRACKING OK";
++        case 3: return "TRACKING WEAK";
++        case 4: return "TRACKING LOST";
++        case 5: return "TRACKING OK (KLT)";
++        default: return "UNKNOWN STATE";
++    }
++}
++
++const char* TrackingGuidance(const int state)
++{
++    switch(state)
++    {
++        case 1: return "Move slowly and keep textured objects visible in both lenses";
++        case 3: return "Slow down; point both lenses at a previously mapped textured area";
++        case 4: return "Return to a known view; avoid blank walls, blur and lens occlusion";
++        default: return "Green points are tracked features; the 3D window is a sparse map";
++    }
++}
++
++cv::Scalar TrackingStateColor(const int state)
++{
++    if(state == 2 || state == 5) return cv::Scalar(40, 220, 40);
++    if(state == 3 || state == 1) return cv::Scalar(0, 200, 255);
++    if(state == 4) return cv::Scalar(40, 40, 255);
++    return cv::Scalar(210, 210, 210);
++}
++}
++
+ Viewer::Viewer(System* pSystem, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Tracking *pTracking, const string &strSettingPath, Settings* settings):
+     both(false), mpSystem(pSystem), mpFrameDrawer(pFrameDrawer),mpMapDrawer(pMapDrawer), mpTracker(pTracking),
+     mbFinishRequested(false), mbFinished(true), mbStopped(true), mbStopRequested(false)
+@@ -164,7 +204,7 @@ void Viewer::Run()
+     mbFinished = false;
+     mbStopped = false;
+ 
+-    pangolin::CreateWindowAndBind("ORB-SLAM3: Map Viewer",1024,768);
++    pangolin::CreateWindowAndBind("ORB-SLAM3: 3D Sparse Map",1024,768);
+ 
+     // 3D Mouse handler requires depth testing to be enabled
+     glEnable(GL_DEPTH_TEST);
+@@ -187,6 +227,7 @@ void Viewer::Run()
+     pangolin::Var<bool> menuStop("menu.Stop",false,false);
+     pangolin::Var<bool> menuStepByStep("menu.Step By Step",false,true);  // false, true
+     pangolin::Var<bool> menuStep("menu.Step",false,false);
++    pangolin::Var<std::string> menuTrackingStatus("menu.Tracking", "WAITING");
+ 
+     pangolin::Var<bool> menuShowOptLba("menu.Show LBA opt", false, true);
+     // Define Camera Render Object (for view / scene browsing)
+@@ -204,7 +245,23 @@ void Viewer::Run()
+     Twc.SetIdentity();
+     pangolin::OpenGlMatrix Ow; // Oriented with g in the z axis
+     Ow.SetIdentity();
+-    cv::namedWindow("ORB-SLAM3: Current Frame");
++    const char* frameViewerSetting = std::getenv("ORB_SLAM3_FRAME_VIEWER");
++    bool imageWindowOk = !frameViewerSetting ||
++                         std::string(frameViewerSetting) != "0";
++    try
++    {
++        if(imageWindowOk)
++        {
++            cv::namedWindow("ORB-SLAM3: Camera Tracking", cv::WINDOW_NORMAL);
++            cv::resizeWindow("ORB-SLAM3: Camera Tracking", 1400, 520);
++        }
++    }
++    catch(const cv::Exception& e)
++    {
++        imageWindowOk = false;
++        std::cerr << "OpenCV current-frame window disabled; Pangolin 3D remains active: "
++                  << e.what() << std::endl;
++    }
+ 
+     bool bFollow = true;
+     bool bLocalizationMode = false;
+@@ -217,6 +274,8 @@ void Viewer::Run()
+     }
+ 
+     float trackedImageScale = mpTracker->GetImageScale();
++    auto lastOverlayUpdate = std::chrono::steady_clock::now() -
++                             std::chrono::seconds(1);
+ 
+     cout << "Starting the Viewer" << endl;
+     while(1)
+@@ -317,26 +376,68 @@ void Viewer::Run()
+ 
+         pangolin::FinishFrame();
+ 
+-        cv::Mat toShow;
+-        cv::Mat im = mpFrameDrawer->DrawFrame(trackedImageScale);
+-
+-        if(both){
+-            cv::Mat imRight = mpFrameDrawer->DrawRightFrame(trackedImageScale);
+-            cv::hconcat(im,imRight,toShow);
+-        }
+-        else{
+-            toShow = im;
++        const auto statusNow = std::chrono::steady_clock::now();
++        if(statusNow - lastOverlayUpdate >= std::chrono::milliseconds(250))
++        {
++            menuTrackingStatus = TrackingStateLabel(mpTracker->mState);
++            lastOverlayUpdate = statusNow;
+         }
+ 
+-        if(mImageViewerScale != 1.f)
++        if(imageWindowOk)
+         {
+-            int width = toShow.cols * mImageViewerScale;
+-            int height = toShow.rows * mImageViewerScale;
+-            cv::resize(toShow, toShow, cv::Size(width, height));
+-        }
++            cv::Mat toShow;
++            cv::Mat im = mpFrameDrawer->DrawFrame(trackedImageScale);
++
++            if(both){
++                cv::Mat imRight = mpFrameDrawer->DrawRightFrame(trackedImageScale);
++                cv::hconcat(im,imRight,toShow);
++            }
++            else{
++                toShow = im;
++            }
++
++            if(mImageViewerScale != 1.f)
++            {
++                int width = toShow.cols * mImageViewerScale;
++                int height = toShow.rows * mImageViewerScale;
++                cv::resize(toShow, toShow, cv::Size(width, height));
++            }
++
++            if(!toShow.empty())
++            {
++                const int trackingState = mpTracker->mState;
++                const cv::Scalar stateColor = TrackingStateColor(trackingState);
++                cv::rectangle(toShow, cv::Rect(0, 0, toShow.cols, 78),
++                              cv::Scalar(18, 18, 18), cv::FILLED);
++                cv::putText(toShow,
++                            std::string(TrackingStateLabel(trackingState)),
++                            cv::Point(18, 31), cv::FONT_HERSHEY_SIMPLEX, 0.82,
++                            stateColor, 2, cv::LINE_AA);
++                cv::putText(toShow, TrackingGuidance(trackingState),
++                            cv::Point(18, 63), cv::FONT_HERSHEY_SIMPLEX, 0.62,
++                            cv::Scalar(235, 235, 235), 1, cv::LINE_AA);
++            }
+ 
+-        cv::imshow("ORB-SLAM3: Current Frame",toShow);
+-        cv::waitKey(mT);
++            try
++            {
++                cv::imshow("ORB-SLAM3: Camera Tracking",toShow);
++                cv::waitKey(mT);
++            }
++            catch(const cv::Exception& e)
++            {
++                imageWindowOk = false;
++                std::cerr << "OpenCV current-frame window disabled; Pangolin 3D remains active: "
++                          << e.what() << std::endl;
++            }
++        }
++        else
++        {
++            // A sparse map does not need camera-rate redraw. On reset-heavy
++            // scenes, 60 Hz rendering repeatedly contends with LocalMapping
++            // for map locks and can reduce tracking to ~2 FPS.
++            std::this_thread::sleep_for(std::chrono::milliseconds(
++                std::max(100, static_cast<int>(mT))));
++        }
+ 
+         if(menuReset)
+         {
+@@ -380,6 +481,21 @@ void Viewer::Run()
+             break;
+     }
+ 
++    // Both GUI backends own process-global objects. Destroy their windows from
++    // the viewer thread before System teardown to avoid late static-destruction
++    // calls into an already released Pangolin/GTK backend.
++    if(imageWindowOk)
++    {
++        try
++        {
++            cv::destroyWindow("ORB-SLAM3: Camera Tracking");
++            cv::waitKey(1);
++        }
++        catch(const cv::Exception&)
++        {
++        }
++    }
++    pangolin::DestroyWindow("ORB-SLAM3: 3D Sparse Map");
+     SetFinish();
+ }
+ 

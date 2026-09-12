@@ -1,0 +1,10 @@
+name: fire-monitor
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - cmake
+  - eigen=3.4
+  - boost-cpp
+  - pangolin-opengl

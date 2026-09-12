@@ -1,0 +1,14 @@
+[submodule "vendor/ORB_SLAM3"]
+	path = vendor/ORB_SLAM3
+	url = https://github.com/UZ-SLAMLab/ORB_SLAM3.git
+	ignore = dirty
+
+[submodule "vendor/opencv_cuda"]
+	path = vendor/opencv_cuda
+	url = https://github.com/opencv/opencv.git
+	ignore = dirty
+
+[submodule "vendor/opencv_contrib_cuda"]
+	path = vendor/opencv_contrib_cuda
+	url = https://github.com/opencv/opencv_contrib.git
+	ignore = dirty

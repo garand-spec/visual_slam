@@ -1,0 +1,97 @@
+diff --git a/modules/core/src/cuda_info.cpp b/modules/core/src/cuda_info.cpp
+index 2558ec8..db59bac 100644
+--- a/modules/core/src/cuda_info.cpp
++++ b/modules/core/src/cuda_info.cpp
+@@ -45,6 +45,15 @@
+ using namespace cv;
+ using namespace cv::cuda;
+ 
++#if defined(HAVE_CUDA)
++static int cudaDeviceAttributeValue(int device, cudaDeviceAttr attr)
++{
++    int value = 0;
++    cudaSafeCall(cudaDeviceGetAttribute(&value, attr, device));
++    return value;
++}
++#endif
++
+ int cv::cuda::getCudaEnabledDeviceCount()
+ {
+ #ifndef HAVE_CUDA
+@@ -424,7 +433,7 @@ int cv::cuda::DeviceInfo::clockRate() const
+ #ifndef HAVE_CUDA
+     throw_no_cuda();
+ #else
+-    return deviceProps().get(device_id_)->clockRate;
++    return cudaDeviceAttributeValue(device_id_, cudaDevAttrClockRate);
+ #endif
+ }
+ 
+@@ -487,7 +496,7 @@ bool cv::cuda::DeviceInfo::kernelExecTimeoutEnabled() const
+ #ifndef HAVE_CUDA
+     throw_no_cuda();
+ #else
+-    return deviceProps().get(device_id_)->kernelExecTimeoutEnabled != 0;
++    return cudaDeviceAttributeValue(device_id_, cudaDevAttrKernelExecTimeout) != 0;
+ #endif
+ }
+ 
+@@ -522,7 +531,7 @@ DeviceInfo::ComputeMode cv::cuda::DeviceInfo::computeMode() const
+         ComputeModeExclusiveProcess
+     };
+ 
+-    return tbl[deviceProps().get(device_id_)->computeMode];
++    return tbl[cudaDeviceAttributeValue(device_id_, cudaDevAttrComputeMode)];
+ #endif
+ }
+ 
+@@ -554,7 +563,7 @@ int cv::cuda::DeviceInfo::maxTexture1DLinear() const
+ #ifndef HAVE_CUDA
+     throw_no_cuda();
+ #else
+-    return deviceProps().get(device_id_)->maxTexture1DLinear;
++    return cudaDeviceAttributeValue(device_id_, cudaDevAttrMaxTexture1DLinearWidth);
+ #endif
+ }
+ 
+@@ -793,7 +802,7 @@ int cv::cuda::DeviceInfo::memoryClockRate() const
+ #ifndef HAVE_CUDA
+     throw_no_cuda();
+ #else
+-    return deviceProps().get(device_id_)->memoryClockRate;
++    return cudaDeviceAttributeValue(device_id_, cudaDevAttrMemoryClockRate);
+ #endif
+ }
+ 
+@@ -933,7 +942,10 @@ void cv::cuda::printCudaDeviceInfo(int device)
+         if (cores > 0)
+             printf("  (%2d) Multiprocessors x (%2d) CUDA Cores/MP:     %d CUDA Cores\n", prop.multiProcessorCount, cores, cores * prop.multiProcessorCount);
+ 
+-        printf("  GPU Clock Speed:                               %.2f GHz\n", prop.clockRate * 1e-6f);
++        const int clockRate = cudaDeviceAttributeValue(dev, cudaDevAttrClockRate);
++        const int kernelExecTimeout = cudaDeviceAttributeValue(dev, cudaDevAttrKernelExecTimeout);
++        const int computeModeValue = cudaDeviceAttributeValue(dev, cudaDevAttrComputeMode);
++        printf("  GPU Clock Speed:                               %.2f GHz\n", clockRate * 1e-6f);
+ 
+         printf("  Max Texture Dimension Size (x,y,z)             1D=(%d), 2D=(%d,%d), 3D=(%d,%d,%d)\n",
+             prop.maxTexture1D, prop.maxTexture2D[0], prop.maxTexture2D[1],
+@@ -952,8 +964,8 @@ void cv::cuda::printCudaDeviceInfo(int device)
+         printf("  Maximum memory pitch:                          %u bytes\n", (int)prop.memPitch);
+         printf("  Texture alignment:                             %u bytes\n", (int)prop.textureAlignment);
+ 
+-        printf("  Concurrent copy and execution:                 %s with %d copy engine(s)\n", (prop.deviceOverlap ? "Yes" : "No"), prop.asyncEngineCount);
+-        printf("  Run time limit on kernels:                     %s\n", prop.kernelExecTimeoutEnabled ? "Yes" : "No");
++        printf("  Concurrent copy and execution:                 %s with %d copy engine(s)\n", (prop.asyncEngineCount > 0 ? "Yes" : "No"), prop.asyncEngineCount);
++        printf("  Run time limit on kernels:                     %s\n", kernelExecTimeout ? "Yes" : "No");
+         printf("  Integrated GPU sharing Host Memory:            %s\n", prop.integrated ? "Yes" : "No");
+         printf("  Support host page-locked memory mapping:       %s\n", prop.canMapHostMemory ? "Yes" : "No");
+ 
+@@ -964,7 +976,7 @@ void cv::cuda::printCudaDeviceInfo(int device)
+         printf("  Device supports Unified Addressing (UVA):      %s\n", prop.unifiedAddressing ? "Yes" : "No");
+         printf("  Device PCI Bus ID / PCI location ID:           %d / %d\n", prop.pciBusID, prop.pciDeviceID );
+         printf("  Compute Mode:\n");
+-        printf("      %s \n", computeMode[prop.computeMode]);
++        printf("      %s \n", computeMode[computeModeValue]);
+     }
+ 
+     printf("\n");

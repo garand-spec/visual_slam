@@ -1,0 +1,38 @@
+{
+  "configurations": [
+    {
+      "name": "Jetson ARM64 (source index)",
+      "includePath": [
+        "${workspaceFolder}/src",
+        "${workspaceFolder}/vendor/opencv_cuda/install/include/opencv4",
+        "${workspaceFolder}/vendor/ORB_SLAM3",
+        "${workspaceFolder}/vendor/ORB_SLAM3/include",
+        "${workspaceFolder}/vendor/ORB_SLAM3/include/CameraModels",
+        "${workspaceFolder}/vendor/ORB_SLAM3/Thirdparty/Sophus",
+        "${workspaceFolder}/vendor/rervision_single_imu/native",
+        "/home/linaro/miniconda3/envs/fire-monitor/include",
+        "/home/linaro/miniconda3/envs/fire-monitor/include/eigen3"
+      ],
+      "defines": [
+        "_LINUX_",
+        "HAVE_EIGEN",
+        "HAVE_EPOXY"
+      ],
+      "compilerPath": "",
+      "cStandard": "c17",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "linux-gcc-arm64",
+      "browse": {
+        "path": [
+          "${workspaceFolder}/src",
+          "${workspaceFolder}/vendor/opencv_cuda/install/include/opencv4",
+          "${workspaceFolder}/vendor/ORB_SLAM3/include",
+          "${workspaceFolder}/vendor/ORB_SLAM3/Thirdparty/Sophus",
+          "${workspaceFolder}/vendor/rervision_single_imu/native"
+        ],
+        "limitSymbolsToIncludedHeaders": true
+      }
+    }
+  ],
+  "version": 4
+}

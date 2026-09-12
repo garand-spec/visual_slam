@@ -1,0 +1,6 @@
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.cpp text eol=lf
+*.patch -text
+*.so binary

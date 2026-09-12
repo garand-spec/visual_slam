@@ -1,0 +1,18 @@
+{
+  "include": [
+    "src",
+    "tools",
+    "tests"
+  ],
+  "exclude": [
+    "vendor",
+    "data",
+    "logs"
+  ],
+  "extraPaths": [
+    ".",
+    "vendor/rervision_single_imu/python"
+  ],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic"
+}

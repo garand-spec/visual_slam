@@ -1,0 +1,25 @@
+{
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}",
+    "${workspaceFolder}/vendor/rervision_single_imu/python"
+  ],
+  "python.analysis.exclude": [
+    "${workspaceFolder}/vendor",
+    "${workspaceFolder}/data",
+    "${workspaceFolder}/logs"
+  ],
+  "C_Cpp.errorSquiggles": "enabledIfIncludesResolve",
+  "C_Cpp.codeAnalysis.exclude": {
+    "${workspaceFolder}/vendor/**": true,
+    "${workspaceFolder}/data/**": true
+  },
+  "cmake.configureOnOpen": false,
+  "files.watcherExclude": {
+    "${workspaceFolder}/vendor/opencv_cuda/build*/**": true,
+    "${workspaceFolder}/data/runtime/**": true
+  },
+  "search.exclude": {
+    "${workspaceFolder}/vendor/opencv_cuda/build*/**": true,
+    "${workspaceFolder}/data/runtime/**": true
+  }
+}

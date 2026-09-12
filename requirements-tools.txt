@@ -1,0 +1,4 @@
+# Workstation-only dependencies for dataset preparation, validation and tests.
+# On Jetson, use the platform OpenCV build instead of installing this file.
+numpy>=1.26
+opencv-python>=4.8

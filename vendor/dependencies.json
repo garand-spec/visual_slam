@@ -1,0 +1,20 @@
+[
+  {
+    "name": "ORB_SLAM3",
+    "url": "https://github.com/UZ-SLAMLab/ORB_SLAM3.git",
+    "commit": "4452a3c4ab75b1cde34e5505a36ec3f9edcdc4c4",
+    "patch": "patches/ORB_SLAM3.patch"
+  },
+  {
+    "name": "opencv_cuda",
+    "url": "https://github.com/opencv/opencv.git",
+    "commit": "49486f61fb25722cbcf586b7f4320921d46fb38e",
+    "patch": "patches/opencv_cuda.patch"
+  },
+  {
+    "name": "opencv_contrib_cuda",
+    "url": "https://github.com/opencv/opencv_contrib.git",
+    "commit": "d943e1d61c8bc556a13783e1546ee7c1a9e0b1cf",
+    "patch": "patches/opencv_contrib_cuda.patch"
+  }
+]

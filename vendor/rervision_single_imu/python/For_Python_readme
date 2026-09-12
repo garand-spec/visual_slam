@@ -1,0 +1,189 @@
+================================================================================
+                     SCAM Python SDK 运行与集成说明 (print_imu.py)
+================================================================================
+
+本项目提供双目/单目相机的实时 NV12/RGB24 图像采集、IMU 传感器读取与连续打印快照的
+Python 封装及使用范例。
+
+运行环境准备：
+  * 操作系统: Linux (如 Ubuntu)
+  * Python 版本: Python 3.6+
+  * 动态库依赖: 在 build/ 目录下必须存在 libsyncsdk.so 与 libturbojpeg.so.0
+  * 注意事项: SDK 暂不支持 YUV422 格式的分辨率抓取。图像数据输出仅支持 NV12 模式与 RGB24 模式。
+
+
+================================================================================
+1. 连续 IMU 数据免闪烁打印工具 (print_imu.py)
+================================================================================
+
+print_imu.py 是用于实时查看 IMU 状态与高速抓图的主要演示工具。它支持交互式配置与无闪烁的终端渲染。
+
+主要功能：
+  - 免闪烁实时终端刷新：
+    通过光标复位（\033[H）与行尾清除（\033[K）重绘终端，在高达 60FPS 的高频刷新下保持显示稳定，完全消除闪烁。
+  - 交互式配置：
+    1. 启动时自动枚举并列出相机支持的所有分辨率格式与帧率（如 MJPG 4000x1200 60fps），由用户从 0 开始进行选择（直接回车默认选择第 0 项）。对于不支持的 YUV422 格式的分辨率，会加上不支持提示并禁止选择。
+    2. 引导用户选择输出图像数据的工作模式（仅限 NV12 模式 或 RGB24 模式这两种）。
+  - 终端冻结/恢复 (s键)：
+    按 s 键可暂停或恢复终端屏幕刷新。暂停状态下底层图像与数据流持续采集，屏幕上保持冻结最后一帧的静态数据，以便详细观察 IMU 读数。
+  - 异步数据快照保存 (空格键)：
+    按 空格 键会在当前目录下自动创建 SaveData/ 目录，并以当前系统时间（YYYYMMDD_HHMMSS_FFF）创建子文件夹。文件夹中包含：
+    * image.jpg: 当前帧的压缩图像（由 NV12 或 RGB24 压缩）。
+    * imu_data.txt: 包含设备信息、曝光参数，以及对齐格式化后的 11 组 IMU 传感器详细数据表（加速度单位为 g，陀螺仪单位为 dps，时间戳单位为 us）。
+
+运行指令：
+    python3 print_imu.py [可选参数]
+
+    可选命令行参数：
+        --device DEVICE              指定打开的相机设备逻辑号，默认选择第一个可用设备。
+        --format-index FORMAT_INDEX  指定相机抓取的格式索引。若指定，则跳过交互式选择。若指定的索引对应 YUV422，程序会报错退出。
+        --sdk-format {NV12,RGB24}   指定 SDK 输出的图像数据工作模式。若指定，则跳过交互式选择。
+
+
+================================================================================
+2. Python SDK 接口及函数说明 (scam_sdk.py)
+================================================================================
+
+在 Python 代码中，通过 from scam_sdk import ScamSDK, CamFormat, FrameData 引入 SDK，并通过
+ScamSDK 调用底层的动态链接库。
+
+一、常量与枚举定义
+    图像色彩格式 (CamFormat):
+        FORMAT_UNKNOWN = 0
+        FORMAT_MJPG = 1
+        FORMAT_RGB24 = 2  (SDK输出支持)
+        FORMAT_YUV422 = 3 (SDK暂不支持抓取)
+        FORMAT_NV12 = 4   (SDK输出支持)
+
+二、数据结构定义 (ctypes.Structure)
+
+    DeviceInfo
+        表示检测到的设备信息。
+        name (bytes): 设备名称，长度 256 字节。
+        vidpid (bytes): 设备 VID/PID 字符串，长度 16 字节。
+        number (int): 设备逻辑编号 (0 ~ 5)。
+        isExist (bool): 设备当前是否存在。
+        isOpened (bool): 设备当前是否被打开。
+
+    sICM42688_XYZ_float
+        表示单点浮点型 IMU 数据。
+        uTime (int): 采样时间戳 (微秒)。
+        fAccData_X, fAccData_Y, fAccData_Z (float): X/Y/Z 轴加速度 (除以 1000 换算为 g)。
+        fGyroData_X, fGyroData_Y, fGyroData_Z (float): X/Y/Z 轴陀螺仪角速度 (dps)。
+
+    sAK09940_XYZ_int
+        表示磁强计数据。
+        uTime (int): 采样时间戳 (微秒)。
+        iX, iY, iZ (int): 磁场原始数据。
+        Temp (float): 传感器温度。
+        iStatusBit (int): 状态位。
+
+    FormatInfo
+        表示设备支持的分辨率、格式和帧率信息。
+        fmt (int): 对应 CamFormat 枚举值。
+        width (int): 图像宽度。
+        height (int): 图像高度。
+        fps (int): 图像帧率。
+
+    CamData
+        表示单路摄像头的一帧输出数据。
+        data (ctypes.POINTER(ctypes.c_uint8)): 指向图像像素数据的指针。
+        width (int): 图像宽度。
+        height (int): 图像高度。
+        bufSize (int): 图像数据总字节数。
+        format (int): 对应 CamFormat。
+        startExpouseTime (int): 曝光起始时间戳 (微秒)。
+        endExpouseTime (int): 曝光结束时间戳 (微秒)。
+        imu_data (sICM42688_XYZ_float * 11): 附带的 11 个 IMU 数据点数组。
+        mtt_data (sAK09940_XYZ_int * 5): 附带的 5 个磁力计数据点数组。
+
+三、高级 Python 帧数据类 (FrameData)
+    FrameData 对底层的 CamData 结构体进行封装，提供安全易用的数据提取方法。
+    - width, height, buf_size, format: 图像基本参数与格式。
+    - start_exposure_time, end_exposure_time: 曝光时间戳。
+    - imu_data: 包含 11 个 IMU 点字典的列表 (key: 'uTime', 'acc', 'gyro')。
+    - mtt_data: 包含 5 个磁强计点字典的列表。
+
+四、SDK 函数详细说明
+    所有函数均通过 ScamSDK 实例调用：
+
+    - initialize()
+        功能: 初始化 SDK。
+        返回值: bool - 成功返回 True，失败返回 False。
+
+    - release()
+        功能: 释放 SDK 占用的全部资源。
+        返回值: 无 (None)
+
+    - get_version()
+        功能: 获取 SDK 的版本号字符串。
+        返回值: str - 版本号字符串。
+
+    - get_last_error()
+        功能: 获取最后一次操作的错误码。
+        返回值: int - 错误码。
+
+    - get_error_text(error_code)
+        功能: 将错误码转换为易读的错误描述文本。
+        参数: error_code (int) - 错误码。
+        返回值: str - 错误描述文本。
+
+    - enum_devices(max_count=6)
+        功能: 枚举系统当前连接的可用摄像头设备，返回设备字典列表。
+        参数: max_count (int) - 最大枚举设备数量.
+        返回值: list - 设备字典列表。
+
+    - get_device_formats(device_index)
+        功能: 获取指定设备支持的所有分辨率及帧率格式。
+        参数: device_index (int) - 设备的逻辑编号。
+        返回值: list - 包含 FormatInfo 字典的列表。
+
+    - set_device_format(device_index, format_index)
+        功能: 设置指定设备的工作分辨率和帧率索引。
+        参数:
+            device_index (int): 设备的逻辑编号。
+            format_index (int): 格式的索引号。
+        说明: 若该格式对应的相机原始格式为 YUV422，SDK 会抛出 ValueError 异常（SDK 仅支持 MJPG 格式分辨率抓取）。
+        返回值: bool - 成功返回 True，失败返回 False。
+
+    - get_device_format_index(device_index)
+        功能: 获取指定设备当前设置的格式索引。
+        参数:
+            device_index (int): 设备的逻辑编号。
+        返回值: int - 当前设置的格式索引值。
+
+    - set_image_format(device_index, image_format)
+        功能: 设置目标相机的输出图像色彩格式。
+        参数:
+            device_index (int): 设备的逻辑编号。
+            image_format (int): 对应 CamFormat 里的色彩格式。
+        说明: 目前仅支持 NV12 模式 (CamFormat.FORMAT_NV12) 与 RGB24 模式 (CamFormat.FORMAT_RGB24) 这两种。设置其他值会抛出 ValueError 异常。
+        返回值: 无 (None)
+
+    - open_device(device_index, callback_fn)
+        功能: 打开指定设备并注册回调函数接收采集到的图像及 IMU 数据。
+        参数:
+            device_index (int): 设备的逻辑编号。
+            callback_fn (function): Python 回调函数，接收 FrameData 实例。
+        返回值: bool - 成功返回 True，失败返回 False。
+
+    - close_device(device_index)
+        功能: 关闭指定逻辑设备。
+        参数: device_index (int) - 设备的逻辑编号。
+        返回值: bool - 成功返回 True，失败返回 False。
+
+    - save_to_jpg(buf, fmt, width, height, filename, quality=85)
+        功能: 将内存中的 NV12 或 RGB24 格式图像压缩并保存为 JPG 文件。
+        参数:
+            buf (ctypes.POINTER): 图像数据缓冲。
+            fmt (int): 图像色彩格式。
+            width (int): 图像宽度。
+            height (int): 图像高度。
+            filename (str): 保存文件路径。
+            quality (int): JPG 压缩质量 (1 ~ 100)。
+        返回值: bool - 成功返回 True，失败返回 False。
+
+    - get_frame_rate(device_index)
+        功能: 获取指定设备当前的实时采集帧率。
+        参数: device_index (int) - 设备的逻辑编号。
+        返回值: float - 当前实时采集帧率值。
