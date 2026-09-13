@@ -7,6 +7,7 @@
 #include "ImuTypes.h"
 #include "scamlib.h"
 #include "pose_telemetry.h"
+#include "live_cloud.h"
 
 #include <algorithm>
 #include <array>
@@ -433,7 +434,7 @@ struct DenseFrame {
 class DenseMapper {
 public:
     DenseMapper(const Options& options, const fs::path& output)
-        : options_(options), output_(output) {}
+        : options_(options), output_(output), live_cloud_(output / "live_dense_cloud.json") {}
 
     ~DenseMapper() {
         stop();
@@ -753,6 +754,17 @@ private:
                 ++voxel.count;
             }
         }
+        if (live_cloud_.due()) {
+            std::vector<std::array<float,3>> preview;
+            const size_t stride=std::max<size_t>(1,(voxels_.size()+19999)/20000);
+            size_t index=0;
+            for(const auto& entry:voxels_) {
+                if(index++ % stride)continue;
+                const auto& v=entry.second;const float inv=1.0f/v.count;
+                preview.push_back({v.x*inv,v.y*inv,v.z*inv});
+            }
+            live_cloud_.write(frame.frame_id,frame.timestamp,frame.map_id,frame.map_version,preview);
+        }
         point_count_.store(voxels_.size());
         fused_frames_.fetch_add(1);
         // Keep reprojection evidence for final-pose surface reconstruction. Bounded
@@ -772,6 +784,7 @@ private:
 
     Options options_;
     fs::path output_;
+    LiveCloudWriter live_cloud_;
     std::ofstream depth_manifest_;
     int archived_frames_ = 0;
     bool have_epoch_ = false;
@@ -985,6 +998,7 @@ int main(int argc, char** argv) {
     // failed startup leaves no empty run_* directories behind.
     const std::string output_dir = make_output_dir(options.output_root);
     PoseTelemetry pose_telemetry(output_dir);
+    LiveCloudWriter sparse_cloud(fs::path(output_dir) / "live_sparse_cloud.json");
     std::ofstream pose_csv(fs::path(output_dir) / "poses.csv");
     pose_csv << "frame,timestamp_s,state,map_points,tx,ty,tz,qx,qy,qz,qw,map_id,tracked_features,source_segment\n";
     std::ofstream health_csv(fs::path(output_dir) / "tracking_health.csv");
@@ -1082,7 +1096,20 @@ int main(int argc, char** argv) {
             const auto world_q = world_pose.unit_quaternion();
             pose_telemetry.update(processed, camera_time, state, map_id, tracked_features,
                 {world_t.x(), world_t.y(), world_t.z()},
-                {world_q.x(), world_q.y(), world_q.z(), world_q.w()});
+                {world_q.x(), world_q.y(), world_q.z(), world_q.w()}, map_version);
+            if(sparse_cloud.due()) {
+                std::vector<std::array<float,3>> preview;
+                if(tracking_is_ok(state)&&tracked_features>0) {
+                    const auto points=slam.GetAllMapPoints();
+                    const size_t stride=std::max<size_t>(1,(points.size()+5999)/6000);
+                    for(size_t i=0;i<points.size();i+=stride) {
+                        auto* point=points[i];if(!point||point->isBad())continue;
+                        const auto xyz=point->GetWorldPos();
+                        preview.push_back({xyz.x(),xyz.y(),xyz.z()});
+                    }
+                }
+                sparse_cloud.write(processed,camera_time,map_id,map_version,preview);
+            }
             pose_csv << processed << "," << std::setprecision(12) << camera_time
                      << "," << state << "," << map_points << ","
                      << t.x() << "," << t.y() << "," << t.z() << ","

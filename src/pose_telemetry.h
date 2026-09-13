@@ -17,12 +17,13 @@ public:
 
     void update(int frame, double timestamp, int state, long long map_id, size_t tracked_features,
                 const std::array<double, 3>& position,
-                const std::array<double, 4>& quaternion) {
+                const std::array<double, 4>& quaternion, unsigned long map_version = 0) {
         bool valid = (state == 2 || state == 5) && tracked_features > 0 && map_id >= 0 && std::isfinite(timestamp);
         for (double v : position) valid = valid && std::isfinite(v);
         for (double v : quaternion) valid = valid && std::isfinite(v);
-        if (valid && (!previous_valid_ || map_id != map_id_)) ++segment_id_;
+        if (valid && (!previous_valid_ || map_id != map_id_ || map_version != map_version_)) ++segment_id_;
         previous_valid_ = valid;
+        map_version_ = map_version;
         tracked_features_ = tracked_features;
         frame_ = frame;
         timestamp_ = timestamp;
@@ -56,6 +57,7 @@ private:
             << "\",\"pid\":" << getpid() << ",\"unix_ms\":" << millis
             << ",\"frame\":" << frame_ << ",\"timestamp_s\":" << (finite ? timestamp_ : 0)
             << ",\"state\":" << state_ << ",\"map_id\":" << map_id_
+            << ",\"map_version\":" << map_version_
             << ",\"source_segment\":" << segment_id_ << ",\"tracked_features\":" << tracked_features_
             << ",\"valid\":" << (valid ? "true" : "false")
             << ",\"coordinate\":\"Twc; metres; xyzw\",\"p\":[";
@@ -75,6 +77,7 @@ private:
     int state_ = -1;
     long long map_id_ = -1;
     long long segment_id_ = -1;
+    unsigned long map_version_ = 0;
     size_t tracked_features_ = 0;
     bool previous_valid_ = false;
     double timestamp_ = 0;

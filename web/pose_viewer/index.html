@@ -30,7 +30,7 @@
   <div class="divider"></div><label class="toggle"><input id="surface" type="checkbox">显示物体表面模型</label>
   <p id="modelNote" class="muted small">正在查询模型…</p>
   <div id="modelControls" hidden><select id="modelMap" aria-label="表面模型地图"></select> <a id="downloadPly">PLY</a> · <a id="downloadObj">OBJ</a></div>
-  <label class="toggle"><input id="cloud" type="checkbox">显示点云</label><a id="cloudDownload" hidden>下载完整点云 PLY</a><p id="cloudNote" class="muted small">采集结束后自动显示已有点云；无需等待表面建模。</p>
+  <label class="toggle"><input id="cloud" type="checkbox">显示点云</label><a id="cloudDownload" hidden>下载完整点云 PLY</a><p id="cloudNote" class="muted small">实时模式显示当前地图点云；结束后自动加载完整导出预览。</p>
   <div class="notice"><strong>这里测量的是摄像头</strong><p>固定佩戴时可作为人的运动参考。位置不是人体关节或身体中心；转头也会改变朝向。纯视觉坐标没有重力对齐，不能直接把 Y 当作身高。</p></div>
   <p id="segmentNote" class="muted small">跟踪失效、地图变化或明显跳变时断开轨迹。未知地图之间不保证坐标连续。</p>
  </aside>

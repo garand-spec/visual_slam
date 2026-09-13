@@ -8,6 +8,7 @@ let frames = [], rawFrames = [], index = 0, mode = 'replay', playing = false;
 let run = '', activeSegment = -1, segmentIndices = [], playbackTime = 0;
 let cloud = null, follow = false, loading = false, pollBusy = false, pollFailed = false;
 let lastTrusted = null, lastLiveFrame = -1, loadGeneration = 0, liveActive = false;
+let liveCloud=null,liveCloudBusy=false,liveCloudKey='',liveMapId=null,liveMapVersion=null;
 let surfaceMesh = null, surfaceMap = null, modelStatus = null, modelPollBusy = false, poseSource = 'online';
 
 const scene = new THREE.Scene();
@@ -100,6 +101,7 @@ function fitView(top = false) {
   const positions = segmentIndices.length ? segmentIndices.map(i=>shownPosition(frames[i].p)) : [new THREE.Vector3()];
   const box = new THREE.Box3().setFromPoints(positions);
   if (cloud?.visible) box.copy(new THREE.Box3().setFromObject(cloud));
+  if (liveCloud?.visible) box.union(new THREE.Box3().setFromObject(liveCloud));
   if (surfaceMesh?.visible) box.union(new THREE.Box3().setFromObject(surfaceMesh));
   const center = box.getCenter(new THREE.Vector3());
   const span = Math.max(1.25, box.getSize(new THREE.Vector3()).length());
@@ -167,6 +169,7 @@ async function loadRun(name, preserveMode = false) {
   try {
     const data=await api(`/api/run?run=${encodeURIComponent(name)}`);
     if (generation!==loadGeneration) return;
+    clearLiveCloud();liveMapId=null;liveMapVersion=null;
     run=name; $('run').value=name; activeSegment=-1; lastTrusted=null; lastLiveFrame=-1;
     cameraRig.visible=false; origin.visible=false;
     if(cloud){world.remove(cloud);cloud.geometry.dispose();cloud.material.dispose();cloud=null;}
@@ -176,6 +179,7 @@ async function loadRun(name, preserveMode = false) {
     $('cloud').checked=Boolean(data.cloud_available); $('cloud').disabled=!data.cloud_available; $('cloudDownload').hidden=true;
     updateFrames(data); rebuildSegment(-1); playbackTime=frames[0]?.t||0;
     if(!preserveMode) setMode('replay');
+    if(mode==='live'){$('cloud').checked=true;$('cloud').disabled=false;}
     showFrame(mode==='live'?frames.length-1:0); fitView();
     $('sceneSubtitle').textContent=`${name.replace('run_','')} · ${frames.length} 帧 · 摄像头位姿`;
     await refreshModels();
@@ -191,14 +195,14 @@ async function refreshRuns() {
   return data;
 }
 function setMode(value) {
-  mode=value; setPlaying(false); liveActive=false;
+  mode=value; setPlaying(false); liveActive=false;clearLiveCloud();
   $('replayMode').classList.toggle('selected',value==='replay');
   $('liveMode').classList.toggle('selected',value==='live');
   $('modeBadge').textContent=value==='live'?'实时':'回放';
   $('play').disabled=value==='live'; $('seek').disabled=value==='live'; $('speed').disabled=value==='live';
   if(surfaceMesh)surfaceMesh.visible=value==='replay'&&$('surface').checked&&Number(frames[index]?.map_id)===surfaceMap;
-  if(value==='live') {if(cloud)cloud.visible=false;$('cloud').checked=false;setUnavailable('等待实时数据','请启动 SLAM；页面不会自行开启摄像头。'); pollLive();}
-  else showFrame(index);
+  if(value==='live') {if(cloud)cloud.visible=false;$('cloud').checked=true;$('cloud').disabled=false;$('cloudDownload').hidden=true;setUnavailable('等待实时数据','请启动 SLAM；页面不会自行开启摄像头。'); pollLive();}
+  else {showFrame(index);if(cloud){$('cloud').checked=true;cloud.visible=true;}}
 }
 async function pollLive() {
   if(mode!=='live'||pollBusy||loading) return;
@@ -210,6 +214,8 @@ async function pollLive() {
     liveActive=Boolean(data.active); pollFailed=false;
     if(!data.available){setUnavailable('暂无实时数据',data.reason||'请先启动 SLAM。');return;}
     const s=data.telemetry;
+    if(liveMapId!==s.map_id||liveMapVersion!==s.map_version)clearLiveCloud();
+    liveMapId=s.map_id;liveMapVersion=s.map_version;
     if(s.frame>lastLiveFrame && s.frame>=0 && s.p && s.q){
       lastLiveFrame=s.frame;
       if(!rawFrames.length||s.frame>rawFrames.at(-1).frame){
@@ -235,6 +241,7 @@ $('liveMode').onclick=()=>setMode('live');
 $('fit').onclick=()=>fitView(); $('top').onclick=()=>fitView(true);
 $('follow').onclick=()=>{follow=!follow;$('follow').setAttribute('aria-pressed',String(follow));};
 async function loadCloud(){
+  if(mode==='live'){if(liveCloud)liveCloud.visible=$('cloud').checked;pollLiveCloud();return;}
   const wanted=$('cloud').checked, cloudRun=run;
   if(wanted){$('surface').checked=false;if(surfaceMesh)surfaceMesh.visible=false;}
   if(cloud){cloud.visible=wanted;if(wanted)fitView();return;}
@@ -253,6 +260,31 @@ async function loadCloud(){
     if(cloud.visible)fitView();
   }catch(error){$('cloud').checked=false;$('cloudNote').textContent=`点云读取失败：${error.message}`;}
 }
+function clearLiveCloud(){
+  if(liveCloud){world.remove(liveCloud);liveCloud.geometry.dispose();liveCloud.material.dispose();liveCloud=null;}
+  liveCloudKey='';
+}
+async function pollLiveCloud(){
+  if(mode!=='live'||!run||loading||liveCloudBusy||!$('cloud').checked)return;
+  const targetRun=run;liveCloudBusy=true;
+  try{
+    const data=await api(`/api/live-cloud?run=${encodeURIComponent(run)}`);
+    if(mode!=='live'||targetRun!==run)return;
+    if(!data.available){clearLiveCloud();$('cloudNote').textContent=data.message;return;}
+    if(data.map_id!==liveMapId||data.map_version!==liveMapVersion){clearLiveCloud();return;}
+    const key=`${data.source}:${data.map_version}:${data.frame}`;
+    if(key!==liveCloudKey){
+      const first=!liveCloud;clearLiveCloud();liveCloudKey=key;
+      const geometry=new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute(data.points.flat(),3));
+      liveCloud=new THREE.Points(geometry,new THREE.PointsMaterial({color:data.source==='dense'?0x8edfd6:0xffd284,size:2,sizeAttenuation:false,fog:false}));
+      world.add(liveCloud);liveCloud.visible=$('cloud').checked;
+      if(first)fitView();
+    }
+    $('cloudNote').textContent=`${data.points.length.toLocaleString()} 个${data.source==='dense'?'稠密':'稀疏'}点 · ${data.message}`;
+  }catch(error){clearLiveCloud();$('cloudNote').textContent=`实时点云连接中断：${error.message}`;}
+  finally{liveCloudBusy=false;}
+}
+setInterval(pollLiveCloud,750);
 $('cloud').onchange=loadCloud;
 async function refreshModels(){
   if(!run||modelPollBusy)return;
@@ -335,4 +367,4 @@ setInterval(pollLive,250);
 try{const data=await refreshRuns();const requested=new URLSearchParams(location.search).get('run');if(data.latest)await loadRun(data.runs.includes(requested)?requested:data.latest);}
 catch(error){errorMessage(`无法连接设备：${error.message}`);}
 // Compact diagnostics for automated browser verification; contains no controls or secrets.
-window.viewerDiagnostics=()=>({mode,run,frame:frames[index]?.frame,frames:frames.length,valid:frames[index]?.valid,segment:activeSegment,playing,liveActive,pollFailed,cameraVisible:cameraRig.visible,surfaceFaces:(surfaceMesh?.geometry.index.count||0)/3,surfaceVisible:Boolean(surfaceMesh?.visible),surfaceMap,poseSource,cloudVisible:Boolean(cloud?.visible),cloudPoints:cloud?.geometry.attributes.position.count||0,viewPosition:camera.position.toArray(),viewTarget:controls.target.toArray(),gridPosition:grid.position.toArray()});
+window.viewerDiagnostics=()=>({mode,run,frame:frames[index]?.frame,frames:frames.length,valid:frames[index]?.valid,segment:activeSegment,playing,liveActive,pollFailed,cameraVisible:cameraRig.visible,surfaceFaces:(surfaceMesh?.geometry.index.count||0)/3,surfaceVisible:Boolean(surfaceMesh?.visible),surfaceMap,poseSource,liveCloudVisible:Boolean(liveCloud?.visible),liveCloudPoints:liveCloud?.geometry.attributes.position.count||0,liveCloudKey,liveMapId,liveMapVersion,cloudVisible:Boolean(cloud?.visible),cloudPoints:cloud?.geometry.attributes.position.count||0,viewPosition:camera.position.toArray(),viewTarget:controls.target.toArray(),gridPosition:grid.position.toArray()});

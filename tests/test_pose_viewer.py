@@ -2,12 +2,36 @@ import json
 import math
 from pathlib import Path
 import tempfile
+import time
 import unittest
 
-from tools.pose_viewer import inverse_pose, read_frames, read_cloud, select_cloud, Store
+from tools.pose_viewer import inverse_pose, read_frames, read_cloud, select_cloud, read_live_cloud, Store
 
 
 class PoseViewerTests(unittest.TestCase):
+    def test_live_cloud_uses_current_epoch_and_falls_back_to_sparse(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);telemetry=dict(frame=20,map_id=1,map_version=4)
+            cloud=dict(frame=19,map_id=1,map_version=4,unix_ms=time.time()*1000,points=[[1,2,3]])
+            (root/'live_sparse_cloud.json').write_text(json.dumps(cloud))
+            (root/'live_dense_cloud.json').write_text(json.dumps({**cloud,'map_version':3}))
+            self.assertEqual(read_live_cloud(root,telemetry,True)['source'],'sparse')
+            (root/'live_dense_cloud.json').write_text(json.dumps(cloud))
+            self.assertEqual(read_live_cloud(root,telemetry,True)['source'],'dense')
+            self.assertFalse(read_live_cloud(root,telemetry,False)['available'])
+            self.assertFalse(read_live_cloud(root,{**telemetry,'map_version':5},True)['available'])
+
+    def test_live_cloud_marks_retained_data_and_rejects_invalid_points(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);telemetry=dict(frame=20,map_id=1,map_version=4)
+            cloud=dict(frame=19,map_id=1,map_version=4,unix_ms=(time.time()-10)*1000,points=[[1,2,3]])
+            path=root/'live_dense_cloud.json';path.write_text(json.dumps(cloud))
+            self.assertTrue(read_live_cloud(root,telemetry,True)['stale'])
+            path.write_text(json.dumps({**cloud,'points':[[float('nan'),0,0]]}))
+            self.assertFalse(read_live_cloud(root,telemetry,True)['available'])
+            path.write_text(json.dumps({**cloud,'frame':21}))
+            self.assertFalse(read_live_cloud(root,telemetry,True)['available'])
+
     def test_empty_dense_cloud_falls_back_to_sparse(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)

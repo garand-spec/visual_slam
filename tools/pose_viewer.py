@@ -124,6 +124,28 @@ def select_cloud(run: Path) -> dict:
             'warning': '没有可显示的点云；需要有效双目观测后重新采集。', 'errors': errors}
 
 
+def read_live_cloud(run: Path, telemetry: dict, active: bool) -> dict:
+    empty={'points':[], 'available':False, 'message':'等待当前地图的有效深度或稀疏点'}
+    if not active:return {**empty,'message':'采集未运行，请查看历史点云'}
+    candidates=[]
+    for source in ('dense','sparse'):
+        path=run/f'live_{source}_cloud.json'
+        try:
+            if path.stat().st_size>4*1024*1024:continue
+            data=json.loads(path.read_text())
+            if data['map_id']!=telemetry.get('map_id') or data['map_version']!=telemetry.get('map_version'):continue
+            if int(data['frame'])>int(telemetry['frame']):continue
+            points=data['points']
+            if not points or len(points)>20000:continue
+            if not all(len(p)==3 and all(isinstance(v,(float,int)) and math.isfinite(v) for v in p) for p in points):continue
+            age=max(0,time.time()-float(data['unix_ms'])/1000)
+            candidates.append({**data,'source':source,'available':True,'age_s':round(age,2),'stale':age>3,
+                'message':'保留上次有效点云，等待跟踪恢复' if age>3 else '实时点云 · 在线估计，可能存在漂移'})
+        except (OSError,ValueError,KeyError,TypeError):continue
+    candidates.sort(key=lambda d:(d['stale'],d['source']!='dense'))
+    return candidates[0] if candidates else empty
+
+
 class Store:
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -216,6 +238,9 @@ def make_handler(store: Store):
                     if not name and names:
                         name = names[0]
                     result = store.live(name) if name else {"available": False, "active": False}
+                elif url.path == "/api/live-cloud":
+                    live=store.live(name)
+                    result={"run":name, **read_live_cloud(store.run(name),live.get('telemetry',{}),live['active'])}
                 elif url.path == "/api/cloud":
                     run = store.run(name)
                     result = select_cloud(run)
