@@ -226,8 +226,7 @@ async function pollLive() {
       }
       showFrame(frames.length-1);
     }
-    if(!data.active && s.lifecycle==='finished'){await loadRun(run);return;}
-    if(!data.active){setUnavailable(s.lifecycle==='finished'?'采集已结束':'数据已停止更新',`保留最后可信位置 · ${data.age_s.toFixed(1)} 秒未更新。`);}
+    if(!data.active){setUnavailable(s.lifecycle==='finished'?'采集已结束':'数据已停止更新',s.lifecycle==='finished'?'等待下一次启动；点击“历史回放”可查看已保存的轨迹和点云。':`保留最后可信位置 · ${data.age_s.toFixed(1)} 秒未更新。`);}
   }catch(error){pollFailed=true;liveActive=false;setUnavailable('连接中断','保留最后可信位置，正在重试。');}
   finally{pollBusy=false;}
 }
@@ -235,8 +234,8 @@ async function pollLive() {
 $('play').onclick=()=>{if(index>=frames.length-1){playbackTime=frames[0].t;showFrame(0);}setPlaying(!playing);};
 $('seek').oninput=()=>{setPlaying(false);showFrame(Number($('seek').value));playbackTime=frames[index]?.t||0;};
 $('run').onchange=()=>loadRun($('run').value);
-$('refresh').onclick=async()=>{try{const data=await refreshRuns();await loadRun(run||data.latest);}catch(e){errorMessage(e.message);}};
-$('replayMode').onclick=()=>setMode('replay');
+$('refresh').onclick=async()=>{try{const data=await refreshRuns();await loadRun(run||data.latest,true);}catch(e){errorMessage(e.message);}};
+$('replayMode').onclick=()=>{setMode('replay');loadRun(run,true);};
 $('liveMode').onclick=()=>setMode('live');
 $('fit').onclick=()=>fitView(); $('top').onclick=()=>fitView(true);
 $('follow').onclick=()=>{follow=!follow;$('follow').setAttribute('aria-pressed',String(follow));};
