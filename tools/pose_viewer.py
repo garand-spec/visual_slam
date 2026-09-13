@@ -109,6 +109,21 @@ def read_cloud(path: Path, limit: int = 20000) -> list[list[float]]:
         return points
 
 
+def select_cloud(run: Path) -> dict:
+    """An empty or unreadable dense export must not mask a usable sparse map."""
+    errors = []
+    for name in ('dense_map.ply', 'map.ply'):
+        try:
+            points = read_cloud(run / name, 60000)
+            if points:
+                return {'points': points, 'source': name,
+                        'warning': '独立参考点云；关闭点云可查看摄像头轨迹与表面模型。'}
+        except (ValueError, OSError, UnicodeError) as error:
+            errors.append(f'{name}: {error}')
+    return {'points': [], 'source': None,
+            'warning': '没有可显示的点云；需要有效双目观测后重新采集。', 'errors': errors}
+
+
 class Store:
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -155,6 +170,9 @@ class Store:
         run = self.run(name)
         file = run / "model_poses.csv" if (run / "model_poses.csv").exists() else run / "poses.csv"
         stamp = (file.name, file.stat().st_mtime_ns, file.stat().st_size) if file.exists() else None
+        cloud_stamp = tuple((p.stat().st_mtime_ns, p.stat().st_size) if p.is_file() else None
+                            for p in (run / 'dense_map.ply', run / 'map.ply'))
+        stamp = (stamp, cloud_stamp)
         with self.lock:
             cached = self.cache.get(name)
             if cached and cached[0] == stamp:
@@ -200,11 +218,21 @@ def make_handler(store: Store):
                     result = store.live(name) if name else {"available": False, "active": False}
                 elif url.path == "/api/cloud":
                     run = store.run(name)
-                    path = run / "dense_map.ply"
-                    if not path.is_file():
-                        path = run / "map.ply"
-                    result = {"points": read_cloud(path), "source": path.name,
-                              "warning": "导出点云仅作参考：在线轨迹未随回环重新优化，历史数据也未记录地图身份。"}
+                    result = select_cloud(run)
+                elif url.path == "/api/cloud-download":
+                    run = store.run(name)
+                    source = query.get("source", [""])[0]
+                    if source not in {"dense_map.ply", "map.ply"}: raise ValueError("invalid cloud source")
+                    path = run / source
+                    if not path.is_file(): raise ValueError("point cloud not available")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(path.stat().st_size))
+                    self.send_header("Content-Disposition", f'attachment; filename="{run.name}_{source}"')
+                    self.end_headers()
+                    with path.open('rb') as f:
+                        while chunk := f.read(65536): self.wfile.write(chunk)
+                    return
                 elif url.path == "/api/models":
                     run = store.run(name)
                     status = run / "models/status.json"

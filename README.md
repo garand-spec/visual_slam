@@ -186,3 +186,6 @@ ORB-SLAM3 及其派生链接程序遵循上游 GPLv3；`vendor/` 下其他组件
 ## Git 仓库与第三方依赖
 
 主项目同步至 https://github.com/garand-spec/visual_slam，替代原先的 yxt_visual_slam 演示程序。第三方版本、Jetson 定制补丁与首次克隆步骤见 [vendor/README.md](vendor/README.md)。设备上的数据、日志和编译产物保留在本地。
+
+
+2026-09-13：采集结束后默认显示已有点云，网格不可用时仍可查看和下载点云，稠密为空时退回稀疏地图。实测结果见 [佩戴测试与点云显示](docs/佩戴测试与点云显示_20260913.md)。

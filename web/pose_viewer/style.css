@@ -4,3 +4,6 @@
 #modelControls[hidden] { display:none; }
 #modelControls select { width:100%; }
 #modelControls a { color:#72ded5; font-size:12px; padding:5px 8px; border:1px solid #344d61; border-radius:5px; text-decoration:none; }
+
+#cloudDownload { color:#72ded5; font-size:12px; display:inline-block; margin:8px 0; }
+#cloudDownload[hidden] { display:none; }

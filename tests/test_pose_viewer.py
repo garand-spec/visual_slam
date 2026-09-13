@@ -4,10 +4,34 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.pose_viewer import inverse_pose, read_frames, read_cloud, Store
+from tools.pose_viewer import inverse_pose, read_frames, read_cloud, select_cloud, Store
 
 
 class PoseViewerTests(unittest.TestCase):
+    def test_empty_dense_cloud_falls_back_to_sparse(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            header='ply\nformat ascii 1.0\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\nend_header\n'
+            (root/'dense_map.ply').write_text(header.format(0))
+            (root/'map.ply').write_text(header.format(1)+'1 2 3\n')
+            self.assertEqual(select_cloud(root)['source'],'map.ply')
+            (root/'dense_map.ply').write_text('incomplete export')
+            self.assertEqual(select_cloud(root)['points'],[[1,2,3]])
+            (root/'dense_map.ply').write_text(header.format(1)+'4 5 6\n')
+            self.assertEqual(select_cloud(root)['source'],'dense_map.ply')
+
+    def test_absent_cloud_is_reported_without_fake_points(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(select_cloud(Path(d))['points'],[])
+
+    def test_late_cloud_export_invalidates_recording_cache(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);run=root/'data/runtime/orbslam3/run_20260913_200139'
+            run.mkdir(parents=True);store=Store(root)
+            self.assertFalse(store.recording(run.name)['cloud_available'])
+            (run/'map.ply').write_text('ply\nformat ascii 1.0\nelement vertex 0\nend_header\n')
+            self.assertTrue(store.recording(run.name)['cloud_available'])
+
     def test_inversion_rotates_translation_not_just_negation(self):
         # Rcw is +90 degrees about Z. Camera centre is -Rcw.T * [1,0,0].
         s = math.sqrt(.5)
