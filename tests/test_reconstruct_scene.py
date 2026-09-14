@@ -6,7 +6,7 @@ import unittest
 
 import cv2
 import numpy as np
-from tools.reconstruct_scene import depth_surface, fuse_surfaces, pose_matrix, reconstruct
+from tools.reconstruct_scene import depth_surface, fuse_surfaces, pose_matrix, reconstruct, resolve_poses
 
 
 CAL = dict(width=12, height=12, fx=100, fy=100, cx=5.5, cy=5.5,
@@ -32,6 +32,60 @@ def fixture(run):
 
 
 class SurfaceTests(unittest.TestCase):
+    def test_partial_final_coverage_uses_one_consistent_snapshot_epoch(self):
+        base=dict(frame=0,timestamp_s=1,state=2,map_id=0,map_version=8,source_segment=0,
+                  tracked_features=100,tx=0,ty=0,tz=0,qx=0,qy=0,qz=0,qw=1)
+        second={**base,'frame':1,'timestamp_s':2,'tx':-1}
+        captures=[{**r,'depth':'depth.png','image':'gray.png'} for r in (base,second)]
+        resolved,metadata,usable,audit=resolve_poses([base,second],[{**second,'tx':999}],captures)
+        self.assertEqual(resolved[1]['map_id'],resolved[2]['map_id'])
+        self.assertEqual(resolved[2]['tx'],-1)
+        self.assertEqual(resolved[2]['pose_source'],'online_snapshot')
+        self.assertEqual(audit['final_pose_matched_depth_frames'],1)
+
+    def test_reset_and_no_overlapping_final_poses_recovers_separate_epochs(self):
+        with tempfile.TemporaryDirectory() as d:
+            run=Path(d);fixture(run)
+            with (run/'poses.csv').open() as f:online=list(csv.DictReader(f))
+            for row in online:row['map_id']='0'
+            with (run/'poses.csv').open('w',newline='') as f:
+                w=csv.DictWriter(f,fieldnames=list(online[0]));w.writeheader();w.writerows(online)
+            (run/'optimized_poses.csv').write_text('timestamp_s,map_id,tx,ty,tz,qx,qy,qz,qw\n')
+            captures=[{**r,'map_version':10+i,'depth':f'{i}_depth.png','image':f'{i}_gray.png'} for i,r in enumerate(online)]
+            with (run/'depth_frames/frames.csv').open('w',newline='') as f:
+                w=csv.DictWriter(f,fieldnames=list(captures[0]));w.writeheader();w.writerows(captures)
+            result=reconstruct(run,voxel=.005)
+            self.assertEqual(result['state'],'ready')
+            self.assertEqual(result['final_pose_matched_depth_frames'],0)
+            self.assertEqual(result['online_snapshot_depth_frames'],2)
+            self.assertEqual(len(result['models']),2)
+            self.assertEqual({m['map_version'] for m in result['models']},{10,11})
+            self.assertTrue(all(m['pose_source']=='online_snapshot' for m in result['models']))
+            self.assertTrue(all(m['map_id']!=0 for m in result['models']))
+            with (run/'model_poses.csv').open() as f:trajectory=list(csv.DictReader(f))
+            self.assertEqual(trajectory[0]['pose_source'],'online_snapshot')
+            self.assertEqual(trajectory[2]['state'],'4')
+            # Embedded snapshots remain usable even if the producer's main CSV is lost.
+            (run/'poses.csv').unlink();(run/'optimized_poses.csv').unlink()
+            self.assertEqual(reconstruct(run,voxel=.005)['state'],'ready')
+
+    def test_unmatched_legacy_depth_is_not_misreported_as_missing_depth(self):
+        with tempfile.TemporaryDirectory() as d:
+            run=Path(d);fixture(run)
+            (run/'optimized_poses.csv').write_text('timestamp_s,map_id,tx,ty,tz,qx,qy,qz,qw\n')
+            result=reconstruct(run)
+            self.assertEqual(result['reason'],'pose_association_failed')
+            self.assertEqual(result['captured_depth_frames'],3)
+
+    def test_partial_journal_tail_does_not_hide_completed_depth_pairs(self):
+        with tempfile.TemporaryDirectory() as d:
+            run=Path(d);fixture(run)
+            with (run/'depth_frames/frames.csv').open('a') as f:f.write('4,unfinished')
+            result=reconstruct(run,voxel=.005)
+            self.assertEqual(result['state'],'ready')
+            self.assertEqual(result['captured_depth_frames'],3)
+            self.assertEqual(result['discarded_csv_rows'],1)
+
     def test_plane_and_camera_to_world_transform(self):
         depth=np.full((12,12),1000,np.uint16);gray=np.full((12,12),180,np.uint8)
         xyz,faces,_=depth_surface(depth,gray,CAL,np.eye(3),np.array([1,2,3]),3)

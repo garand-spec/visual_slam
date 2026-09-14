@@ -63,7 +63,8 @@ def read_frames(path: Path) -> dict:
             frames.append({"frame": int(row["frame"]), "t": timestamp,
                            "state": state, "valid": state in GOOD_STATES and support > 0,
                            "source_segment": source_segment,
-                           "map_id": map_id, "p": position, "q": quaternion})
+                           "map_id": map_id, "p": position, "q": quaternion,
+                           "pose_source": row.get("pose_source") or ("optimized" if path.name == "model_poses.csv" else "online")})
         except (KeyError, TypeError, ValueError):
             # Keep an explicit break: never connect across a malformed row.
             invalid += 1
@@ -201,7 +202,7 @@ class Store:
                 return cached[1]
             parsed = read_frames(file)
             result = {"run": name, **parsed, "coordinate": "Twc; metres; xyzw",
-                      "pose_source": "optimized" if file.name == "model_poses.csv" else "online",
+                      "pose_source": ("mixed" if any(f.get("pose_source")=="online_snapshot" for f in parsed["frames"]) else "optimized") if file.name == "model_poses.csv" else "online",
                       "cloud_available": (run / "dense_map.ply").is_file() or (run / "map.ply").is_file()}
             if len(self.cache) >= 4:
                 self.cache.pop(next(iter(self.cache)))
@@ -265,6 +266,11 @@ def make_handler(store: Store):
                         "state": "pending" if (run / "depth_frames/frames.csv").exists() else "unavailable",
                         "models": [], "message": "采集结束后生成表面模型" if (run / "depth_frames").exists()
                         else "旧记录没有逐帧深度；表面建模需要新版重新采集。"}
+                    archive=run / 'depth_archive_status.json'
+                    if archive.is_file():
+                        result['archive']=json.loads(archive.read_text())
+                        if result['archive'].get('state') in ('low_disk','io_error','invalid_pose'):
+                            result['message']+='；深度归档异常：'+result['archive']['state']
                 elif url.path in {"/api/model", "/api/model-download"}:
                     run = store.run(name)
                     map_id = query.get("map", [""])[0]

@@ -8,6 +8,7 @@
 #include "scamlib.h"
 #include "pose_telemetry.h"
 #include "live_cloud.h"
+#include "depth_archive.h"
 
 #include <algorithm>
 #include <array>
@@ -429,12 +430,14 @@ struct DenseFrame {
     double timestamp = 0;
     unsigned long map_id = 0;
     unsigned long map_version = 0;
+    long long source_segment = -1;
+    size_t tracked_features = 0;
 };
 
 class DenseMapper {
 public:
     DenseMapper(const Options& options, const fs::path& output)
-        : options_(options), output_(output), live_cloud_(output / "live_dense_cloud.json") {}
+        : options_(options), output_(output), live_cloud_(output / "live_dense_cloud.json"), archive_(output) {}
 
     ~DenseMapper() {
         stop();
@@ -555,8 +558,7 @@ public:
                 cv::StereoSGBM::MODE_SGBM_3WAY);
             fs::create_directories(output_ / "depth_frames");
             fs::create_directories(output_ / "dense_previews");
-            depth_manifest_.open(output_ / "depth_frames/frames.csv");
-            depth_manifest_ << "frame,timestamp_s,map_id,map_version,depth,image\n";
+            archive_.start();
             std::ofstream calibration(output_ / "depth_frames/calibration.json");
             calibration << std::setprecision(15) << "{\"width\":" << dense_size_.width
                 << ",\"height\":" << dense_size_.height << ",\"fx\":" << rectified_focal
@@ -573,7 +575,7 @@ public:
                       << min_disparity_ << " voxel=" << options_.dense_voxel
                       << "m interval=" << options_.dense_interval << "\n";
             return true;
-        } catch (const cv::Exception& error) {
+        } catch (const std::exception& error) {
             std::cerr << "dense mapper initialization failed: "
                       << error.what() << "\n";
             return false;
@@ -582,7 +584,7 @@ public:
 
     void submit(const cv::Mat& left, const cv::Mat& right,
                 const Sophus::SE3f& Tcw, int frame_id, double timestamp,
-                unsigned long map_id, unsigned long map_version) {
+                unsigned long map_id, unsigned long map_version, long long segment, size_t support) {
         if (!active_.load()) return;
         auto frame = std::make_shared<DenseFrame>();
         // cv::Mat reference counting keeps these immutable frame buffers alive;
@@ -594,6 +596,8 @@ public:
         frame->timestamp = timestamp;
         frame->map_id = map_id;
         frame->map_version = map_version;
+        frame->source_segment = segment;
+        frame->tracked_features = support;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             latest_ = std::move(frame);
@@ -605,7 +609,7 @@ public:
         if (!active_.exchange(false)) return;
         cv_.notify_all();
         if (worker_.joinable()) worker_.join();
-        depth_manifest_.flush();
+        archive_.finish();
     }
 
     size_t point_count() const {
@@ -767,26 +771,19 @@ private:
         }
         point_count_.store(voxels_.size());
         fused_frames_.fetch_add(1);
-        // Keep reprojection evidence for final-pose surface reconstruction. Bounded
-        // capture count prevents unbounded disk growth in unattended sessions.
-        if (archived_frames_ < 2000 && cv::countNonZero(depth_mm) >= 1000) {
-            const std::string stem = std::to_string(frame.frame_id);
-            if (cv::imwrite((output_ / "depth_frames" / (stem + "_depth.png")).string(), depth_mm) &&
-                cv::imwrite((output_ / "depth_frames" / (stem + "_gray.png")).string(), left_rectified)) {
-                depth_manifest_ << frame.frame_id << ',' << std::setprecision(15) << frame.timestamp
-                    << ',' << frame.map_id << ',' << frame.map_version << ','
-                    << stem << "_depth.png," << stem << "_gray.png\n";
-                depth_manifest_.flush();
-                ++archived_frames_;
-            }
+        if (cv::countNonZero(depth_mm) >= 1000) {
+            const auto t=frame.Tcw.translation();const auto q=frame.Tcw.unit_quaternion();
+            archive_.write(frame.frame_id,frame.timestamp,frame.map_id,frame.map_version,
+                frame.source_segment,frame.tracked_features,{t.x(),t.y(),t.z()},
+                {q.x(),q.y(),q.z(),q.w()},depth_mm,left_rectified);
         }
+
     }
 
     Options options_;
     fs::path output_;
     LiveCloudWriter live_cloud_;
-    std::ofstream depth_manifest_;
-    int archived_frames_ = 0;
+    DepthArchive archive_;
     bool have_epoch_ = false;
     unsigned long current_epoch_ = 0, current_map_ = 0;
     cv::Size dense_size_;
@@ -1000,7 +997,7 @@ int main(int argc, char** argv) {
     PoseTelemetry pose_telemetry(output_dir);
     LiveCloudWriter sparse_cloud(fs::path(output_dir) / "live_sparse_cloud.json");
     std::ofstream pose_csv(fs::path(output_dir) / "poses.csv");
-    pose_csv << "frame,timestamp_s,state,map_points,tx,ty,tz,qx,qy,qz,qw,map_id,tracked_features,source_segment\n";
+    pose_csv << "frame,timestamp_s,state,map_points,tx,ty,tz,qx,qy,qz,qw,map_id,tracked_features,source_segment,map_version\n";
     std::ofstream health_csv(fs::path(output_dir) / "tracking_health.csv");
     health_csv << "frame,timestamp_s,state,state_name,detected_features,"
                   "tracked_features,map_points,"
@@ -1110,12 +1107,12 @@ int main(int argc, char** argv) {
                 }
                 sparse_cloud.write(processed,camera_time,map_id,map_version,preview);
             }
-            pose_csv << processed << "," << std::setprecision(12) << camera_time
+            pose_csv << processed << "," << std::setprecision(17) << camera_time
                      << "," << state << "," << map_points << ","
                      << t.x() << "," << t.y() << "," << t.z() << ","
                      << q.x() << "," << q.y() << "," << q.z() << "," << q.w()
                      << "," << map_id << "," << tracked_features << ","
-                     << pose_telemetry.segment_id() << "\n";
+                     << pose_telemetry.segment_id() << "," << map_version << "\n";
             if (processed % 3 == 0) pose_csv.flush();
 
             const bool reliable_depth_pose = tracking_is_ok(state) && tracked_features >= 50 && current_keyframes.size() >= 2;
@@ -1124,7 +1121,7 @@ int main(int argc, char** argv) {
             if (dense_active && consecutive_good >= 5) {
                 ++ok_frames_since_dense;
                 if (ok_frames_since_dense >= options.dense_interval) {
-                    dense_mapper.submit(left, right, pose, processed, camera_time, map_id, map_version);
+                    dense_mapper.submit(left, right, pose, processed, camera_time, map_id, map_version, pose_telemetry.segment_id(), tracked_features);
                     ok_frames_since_dense = 0;
                 }
             }

@@ -86,10 +86,12 @@ def fuse_surfaces(surfaces, voxel=.02):
     return merged[used], inverse.reshape(-1,3).astype(np.int32), colors[used]
 
 
-def export_mesh(directory, map_id, vertices, faces, colors):
+def export_mesh(directory, map_id, vertices, faces, colors, provenance=None):
+    provenance=provenance or {"pose_source":"optimized","source_map_id":map_id}
+    quality=provenance["pose_source"]
     stem=f'scene_map_{map_id}'
     with (directory/(stem+'.ply.tmp')).open('w',encoding='ascii') as f:
-        f.write(f'ply\nformat ascii 1.0\ncomment observed stereo surfaces; optimized map {map_id}\n'
+        f.write(f'ply\nformat ascii 1.0\ncomment observed stereo surfaces; {quality} group {map_id}\n'
                 f'element vertex {len(vertices)}\nproperty float x\nproperty float y\nproperty float z\n'
                 f'property uchar red\nproperty uchar green\nproperty uchar blue\nelement face {len(faces)}\n'
                 'property list uchar int vertex_indices\nend_header\n')
@@ -97,7 +99,7 @@ def export_mesh(directory, map_id, vertices, faces, colors):
         for a,b,c in faces:f.write(f'3 {a} {b} {c}\n')
     os.replace(directory/(stem+'.ply.tmp'),directory/(stem+'.ply'))
     with (directory/(stem+'.obj.tmp')).open('w',encoding='ascii') as f:
-        f.write('# Observed stereo surfaces in final SLAM map coordinates, metres\n')
+        f.write(f'# Observed stereo surfaces; {quality} coordinates, metres\n')
         for p in vertices:f.write(f'v {p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n')
         for a,b,c in faces:f.write(f'f {a+1} {b+1} {c+1}\n')
     os.replace(directory/(stem+'.obj.tmp'),directory/(stem+'.obj'))
@@ -110,73 +112,166 @@ def export_mesh(directory, map_id, vertices, faces, colors):
             [(vertices,faces,colors)],preview_voxel)
     atomic_json(directory/(stem+'.json'),{'map_id':map_id,'vertices':preview_vertices.round(6).tolist(),
                 'faces':preview_faces.tolist(),'gray':preview_colors.tolist(),
-                'full_vertices':len(vertices),'full_faces':len(faces)})
+                'full_vertices':len(vertices),'full_faces':len(faces),**provenance})
     return {'map_id':map_id,'vertices':len(vertices),'faces':len(faces),'file':stem+'.ply',
-            'obj':stem+'.obj','preview':stem+'.json'}
+            'obj':stem+'.obj','preview':stem+'.json',**provenance}
+
+
+def stamp(row):
+    return round(float(row['timestamp_s']),6)
+
+
+def supported(row):
+    try:
+        if int(row.get('state',-1)) not in (2,5) or int(row.get('tracked_features',0))<=0:return False
+        pose_matrix(row)
+        return int(row.get('map_id',-1))>=0
+    except (ValueError,KeyError,TypeError):return False
+
+
+def resolve_poses(online, optimized, captures):
+    """Prefer final coordinates; retain complete fallback epochs in separate groups.
+
+    Never mix online and final poses in one mesh, even when map IDs are reused.
+    Embedded capture poses also work when a crash leaves the main CSV incomplete.
+    """
+    original={stamp(r):r for r in online}
+    bases={}
+    epochs={}
+    segments={}
+    for capture in captures:
+        t=stamp(capture);base=original.get(t,capture)
+        if not supported(base):continue
+        if capture.get('map_id','')!='' and int(capture['map_id'])!=int(base['map_id']):continue
+        if capture.get('frame','')!='' and base.get('frame','')!='' and int(capture['frame'])!=int(base['frame']):continue
+        snapshot={**base,**{k:capture[k] for k in ('tx','ty','tz','qx','qy','qz','qw') if k in capture}}
+        if not supported(snapshot):continue
+        bases[t]=snapshot
+        if capture.get('map_version','')!='':
+            epoch=(int(capture.get('map_id',base['map_id'])),int(capture['map_version']))
+            epochs.setdefault(epoch,[]).append(t)
+            if base.get('source_segment','')!='':
+                segments.setdefault((int(base['map_id']),int(base['source_segment'])),set()).add(epoch)
+    corrected={}
+    for row in optimized:
+        t=stamp(row);base=original.get(t,bases.get(t))
+        if base and supported(base):
+            merged={**base,**row,'frame':base.get('frame',row.get('frame',0)),'pose_source':'optimized'}
+            if supported(merged):corrected[t]=merged
+    resolved=dict(corrected)
+    metadata={int(r['map_id']):{'pose_source':'optimized','source_map_id':int(r['map_id'])} for r in corrected.values()}
+    next_id=max([int(r.get('map_id',-1)) for r in online+optimized+captures]+[-1])+1
+    fallback={}
+    for epoch,times in sorted(epochs.items()):
+        if any(t not in corrected for t in times):
+            fallback[epoch]=next_id
+            metadata[next_id]={'pose_source':'online_snapshot','source_map_id':epoch[0],'map_version':epoch[1],
+                'warning':'采集位姿保留结果，未完成最终优化；独立地图，不与优化地图拼接。'}
+            next_id+=1
+    for base in online:
+        if not supported(base):continue
+        epoch=None
+        if base.get('map_version','')!='':epoch=(int(base['map_id']),int(base['map_version']))
+        elif base.get('source_segment','')!='':
+            choices=segments.get((int(base['map_id']),int(base['source_segment'])),set())
+            if len(choices)==1:epoch=next(iter(choices))
+        if epoch in fallback:
+            resolved[stamp(base)]={**base,'map_id':fallback[epoch],'pose_source':'online_snapshot'}
+    for epoch,times in epochs.items():
+        if epoch in fallback:
+            for t in times:resolved[t]={**bases[t],'map_id':fallback[epoch],'pose_source':'online_snapshot'}
+    usable=[r for r in captures if stamp(r) in resolved and stamp(r) in bases]
+    return resolved,metadata,usable,{'captured_depth_frames':len(captures),
+        'final_pose_matched_depth_frames':sum(stamp(r) in corrected for r in captures),
+        'usable_depth_frames':len(usable),
+        'unmatched_depth_frames':len(captures)-len(usable)}
 
 
 def reconstruct(run: Path, stride=3, voxel=.02, max_frames=500):
     run=run.resolve();output=run/'models';output.mkdir(exist_ok=True)
     started=time.time()
-    status={'state':'building','models':[],'message':'正在按最终位姿构建观测表面'}
+    status={'state':'building','models':[],'message':'正在匹配深度和位姿并构建观测表面'}
     atomic_json(output/'status.json',status)
-    calibration_file=run/'depth_frames/calibration.json'
-    frames_file=run/'depth_frames/frames.csv'
-    optimized_file=run/'optimized_poses.csv'
-    if not all(p.is_file() for p in (calibration_file,frames_file,optimized_file)):
-        status.update(state='unavailable',message='该记录缺少逐帧深度或最终位姿，无法可靠重建表面；请用新版重新采集。')
+    calibration_file=run/'depth_frames/calibration.json';frames_file=run/'depth_frames/frames.csv'
+    if not all(p.is_file() for p in (calibration_file,frames_file)):
+        status.update(state='unavailable',reason='missing_depth_archive',message='该记录缺少逐帧深度，无法重建表面；请重新采集。')
         atomic_json(output/'status.json',status);return status
     calibration=json.loads(calibration_file.read_text())
-    with optimized_file.open() as f:optimized=list(csv.DictReader(f))
-    with (run/'poses.csv').open() as f:online=list(csv.DictReader(f))
-    with frames_file.open() as f:captures=list(csv.DictReader(f))
-    # Only originally supported frames may use a final optimized reference pose.
-    original={round(float(r['timestamp_s']),6):r for r in online}
-    corrected={}
-    for row in optimized:
-        stamp=round(float(row['timestamp_s']),6);base=original.get(stamp)
-        if base and int(base['state']) in (2,5) and int(base.get('tracked_features',0))>0:
-            corrected[stamp]={**base,**row}
-    # Preserve original frame order and explicit source segments in the displayed trajectory.
-    fields=['frame','timestamp_s','state','map_points','tx','ty','tz','qx','qy','qz','qw','map_id','tracked_features','source_segment']
-    trajectory=[]
-    for base in online:
-        stamp=round(float(base['timestamp_s']),6)
-        if stamp in corrected:
-            row={**corrected[stamp],'frame':base['frame']};trajectory.append(row)
-        else:
-            trajectory.append({**base,'state':4 if int(base['state']) in (2,5) else base['state'],'tracked_features':0})
-    with (run/'model_poses.csv.tmp').open('w',newline='') as f:
-        writer=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore');writer.writeheader();writer.writerows(trajectory)
-    os.replace(run/'model_poses.csv.tmp',run/'model_poses.csv')
-    samples=[r for r in captures if round(float(r['timestamp_s']),6) in corrected]
-    if len(samples)>max_frames:samples=[samples[i] for i in np.linspace(0,len(samples)-1,max_frames,dtype=int)]
-    groups={};skipped=0;points_budget=0
+    discarded_rows=0
+    def rows(path):
+        nonlocal discarded_rows
+        if not path.exists():return []
+        text=path.read_text()
+        if text and not text.endswith('\n'):
+            text=text[:text.rfind('\n')+1];discarded_rows+=1
+        result=[]
+        for row in csv.DictReader(text.splitlines()):
+            try:
+                if not np.isfinite(float(row['timestamp_s'])):raise ValueError('timestamp')
+                if None in row.values():raise ValueError('incomplete row')
+                result.append(row)
+            except (KeyError,TypeError,ValueError):discarded_rows+=1
+        return result
+    captures=rows(frames_file);online=rows(run/'poses.csv');optimized=rows(run/'optimized_poses.csv')
+    if not online:online=[r for r in captures if supported(r)]
+    resolved,metadata,samples,audit=resolve_poses(online,optimized,captures)
+    status.update(audit,discarded_csv_rows=discarded_rows)
+    # Round-robin groups so smaller maps are not starved by a long first map.
+    grouped={}
+    for r in samples:grouped.setdefault(int(resolved[stamp(r)]['map_id']),[]).append(r)
+    allocations={k:0 for k in grouped}
+    for _ in range(min(max_frames,len(samples))):
+        candidates=[k for k in grouped if allocations[k]<len(grouped[k])]
+        key=min(candidates,key=lambda k:(allocations[k],k));allocations[key]+=1
+    samples=[]
+    for k,group in grouped.items():
+        n=allocations[k]
+        if n:samples.extend(group[i] for i in np.linspace(0,len(group)-1,n,dtype=int))
+    samples.sort(key=stamp)
+    effective_stride=max(stride,int(np.ceil(np.sqrt(calibration['width']*calibration['height']*max(1,len(samples))/8000000))))
+    groups={};skipped=0;points_budget=0;integrated=0
     for index,row in enumerate(samples):
-        stamp=round(float(row['timestamp_s']),6);pose=corrected[stamp];map_id=int(pose['map_id'])
+        pose=resolved[stamp(row)];map_id=int(pose['map_id'])
         depth_path=(run/'depth_frames'/row['depth']).resolve();gray_path=(run/'depth_frames'/row['image']).resolve()
-        if depth_path.parent!=(run/'depth_frames').resolve() or gray_path.parent!=(run/'depth_frames').resolve():
-            raise ValueError('depth path outside recording')
+        if depth_path.parent!=(run/'depth_frames').resolve() or gray_path.parent!=(run/'depth_frames').resolve():raise ValueError('depth path outside recording')
         depth=cv2.imread(str(depth_path),cv2.IMREAD_UNCHANGED);gray=cv2.imread(str(gray_path),cv2.IMREAD_GRAYSCALE)
         if depth is None or gray is None:skipped+=1;continue
         rotation,translation=pose_matrix(pose)
-        surface=depth_surface(depth,gray,calibration,rotation,translation,stride)
+        surface=depth_surface(depth,gray,calibration,rotation,translation,effective_stride)
         points_budget+=len(surface[0])
         if points_budget>8000000:skipped+=len(samples)-index;break
-        groups.setdefault(map_id,[]).append(surface)
-        if index%20==0:
-            atomic_json(output/'status.json',{**status,'processed_depth_frames':index+1,'total_depth_frames':len(samples)})
+        if len(surface[1]):groups.setdefault(map_id,[]).append(surface);integrated+=1
+        if index%20==0:atomic_json(output/'status.json',{**status,'processed_depth_frames':index+1,'total_depth_frames':len(samples)})
     models=[]
     for map_id,surfaces in groups.items():
         vertices,faces,colors=fuse_surfaces(surfaces,voxel)
-        if len(faces):models.append(export_mesh(output,map_id,vertices,faces,colors))
+        if len(faces):models.append(export_mesh(output,map_id,vertices,faces,colors,metadata[map_id]))
     models.sort(key=lambda m:m['faces'],reverse=True)
-    status.update(state='ready' if models else 'unavailable',models=models,
-                  primary_map=models[0]['map_id'] if models else None,
-                  message='表面模型已生成；未观测区域保留空缺' if models else '没有足够的可靠深度表面，请保持双目可见、缓慢移动后重新采集。',
-                  source='stereo depth + final optimized camera poses',coordinate='native final SLAM map; metres',
-                  selected_depth_frames=len(samples),skipped_depth_frames=skipped,
-                  stride=stride,voxel_m=voxel,elapsed_s=round(time.time()-started,3))
+    fallback_count=sum(resolved[stamp(r)]['pose_source']=='online_snapshot' for r in samples)
+    # Publish the aligned trajectory only after mesh export succeeds.
+    if models:
+        fields=['frame','timestamp_s','state','map_points','tx','ty','tz','qx','qy','qz','qw','map_id','map_version','tracked_features','source_segment','pose_source']
+        trajectory=[]
+        for base in online:
+            t=stamp(base)
+            if t in resolved:trajectory.append({**resolved[t],'frame':base.get('frame',0)})
+            else:trajectory.append({**base,'state':4 if int(base['state']) in (2,5) else base['state'],'tracked_features':0})
+        with (run/'model_poses.csv.tmp').open('w',newline='') as f:
+            writer=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore');writer.writeheader();writer.writerows(trajectory)
+        os.replace(run/'model_poses.csv.tmp',run/'model_poses.csv')
+    reason='ready' if models else 'no_depth_frames' if not captures else 'pose_association_failed' if not samples else 'no_valid_surfaces'
+    message=('表面模型已生成；含未优化采集位姿保留的独立地图' if fallback_count else '表面模型已生成；未观测区域保留空缺') if models else {
+        'no_depth_frames':'没有归档深度帧，请检查跟踪和深度采集状态。',
+        'pose_association_failed':'已有深度，但缺少可配对的可信位姿或地图版本；请检查数据完整性。',
+        'no_valid_surfaces':'深度与位姿已配对，但没有可用三角面；请检查深度质量或文件读取错误。'}[reason]
+    status.update(state='ready' if models else 'unavailable',reason=reason,models=models,
+                  primary_map=models[0]['map_id'] if models else None,message=message,
+                  source='stereo depth + per-group pose provenance',coordinate='separate map groups; metres',
+                  selected_depth_frames=len(samples),online_snapshot_depth_frames=fallback_count,
+                  integrated_depth_frames=integrated,skipped_depth_frames=skipped,
+                  stride=effective_stride,requested_stride=stride,voxel_m=voxel,elapsed_s=round(time.time()-started,3))
+    archive_status=run/'depth_archive_status.json'
+    if archive_status.exists():status['archive']=json.loads(archive_status.read_text())
     atomic_json(output/'status.json',status)
     return status
 

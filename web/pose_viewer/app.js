@@ -144,7 +144,7 @@ function showFrame(nextIndex) {
   const drawn = segmentIndices.filter(i=>i<=index).length;
   trail.geometry.setDrawRange(0,drawn);
   $('tracking').textContent='定位正常'; $('tracking').classList.remove('bad');
-  $('trackingDetail').textContent=mode==='live'?'实时摄像头位姿 · 约 10 Hz 刷新':poseSource==='optimized'?'最终优化轨迹 · 与同地图表面模型对齐':'已有记录回放 · 非当前现场位置';
+  $('trackingDetail').textContent=mode==='live'?'实时摄像头位姿 · 约 10 Hz 刷新':f.pose_source==='online_snapshot'?'采集时位姿 · 未最终优化，独立地图':poseSource==='optimized'||poseSource==='mixed'?'最终优化轨迹 · 与同地图表面模型对齐':'已有记录回放 · 非当前现场位置';
   rigMaterial.color.setHex(0xffc86c); rigLines.material.color.setHex(0xffc86c);
   $('displacement').textContent=f.displacement.toFixed(3);
   $('distance').innerHTML=`${f.distance.toFixed(3)} <small>m</small>`;
@@ -297,13 +297,13 @@ async function refreshModels(){
     $('surface').disabled=!ready;$('modelControls').hidden=!ready;
     if(ready){
       const selected=$('modelMap').value;
-      $('modelMap').replaceChildren(...data.models.map(m=>new Option(`MAP ${m.map_id} · ${m.faces.toLocaleString()} 面`,m.map_id)));
+      $('modelMap').replaceChildren(...data.models.map(m=>new Option(`MAP ${m.map_id}${m.pose_source==='online_snapshot'?' · 未优化保留':''} · ${m.faces.toLocaleString()} 面`,m.map_id)));
       $('modelMap').value=data.models.some(m=>String(m.map_id)===selected)?selected:String(data.primary_map);
       updateDownloads();
-      if(poseSource!=='optimized'&&mode==='replay'){
+      if(poseSource==='online'&&mode==='replay'){
         const recording=await api(`/api/run?run=${encodeURIComponent(run)}`);
-        if(run===targetRun&&recording.pose_source==='optimized'){
-          poseSource='optimized';updateFrames(recording);activeSegment=-1;showFrame(index);
+        if(run===targetRun&&recording.pose_source!=='online'){
+          poseSource=recording.pose_source;updateFrames(recording);activeSegment=-1;showFrame(index);
         }
       }
     }
@@ -319,6 +319,7 @@ async function loadSurface(){
   if(!$('surface').checked){if(surfaceMesh)surfaceMesh.visible=false;return;}
   $('cloud').checked=false;if(cloud)cloud.visible=false;
   const targetRun=run,map=Number($('modelMap').value);
+  if(mode==='replay'&&Number(frames[index]?.map_id)!==map){const first=frames.findIndex(f=>f.valid&&Number(f.map_id)===map);if(first>=0){setPlaying(false);showFrame(first);playbackTime=frames[first].t;}}
   $('modelNote').textContent='正在加载表面网格…';
   try{
     const data=await api(`/api/model?run=${encodeURIComponent(run)}&map=${map}`);
@@ -330,7 +331,7 @@ async function loadSurface(){
     surfaceMesh=new THREE.Mesh(geometry,new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:.88}));
     surfaceMap=map;world.add(surfaceMesh);
     surfaceMesh.visible=$('surface').checked&&mode==='replay'&&Number(frames[index]?.map_id)===map;
-    $('modelNote').textContent=`${data.full_faces.toLocaleString()} 个三角面。只显示与当前轨迹同地图的模型；未观测区域留空。`;
+    $('modelNote').textContent=`${data.full_faces.toLocaleString()} 个三角面。${data.warning||'只显示与当前轨迹同地图的模型；未观测区域留空。'}`;
     if(surfaceMesh.visible){const box=new THREE.Box3().setFromObject(surfaceMesh),center=box.getCenter(new THREE.Vector3());const span=Math.max(1,box.getSize(new THREE.Vector3()).length());controls.target.copy(center);camera.position.copy(center).add(new THREE.Vector3(span*.7,span*.6,span*.7));controls.update();}
   }catch(error){$('surface').checked=false;$('modelNote').textContent=`加载失败：${error.message}`;}
 }
